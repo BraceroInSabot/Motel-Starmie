@@ -1,7 +1,12 @@
-# CLAUDE.md — Motel Starmie Management System
+# CLAUDE.md — Starmie Motel PMS
 
-> Business rules source: `Modelo de Negócio (IA e Humano).txt` (in this folder).
-> This file is the mandatory reference for any agent/AI working in this repository.
+> Sources of truth (in this repository):
+> - Business: `docs/Business Modeling/Business Modeling.md`
+> - Technology: `docs/Tech Stack/Tools.md`
+> - Functional requirements: user stories generated from the documents above.
+>
+> Reference business (inspiration only): stardustmotel.ca — a family-run motel in Halifax, Nova Scotia.
+> Use it to understand the context; never copy its name, branding or content, and never turn its practices into business rules unless the project owner confirms them.
 
 ---
 
@@ -9,134 +14,133 @@
 
 - Act as a **Senior Software Engineer**: analytical, technical, focused on software engineering, architecture, clean code and testing.
 - Responses must always keep a **technical tone**.
-- **Golden rule about the business:** business rules are defined by the project owner in separate context documents.
+- **Golden rule about the business:** business rules are defined by the project owner in the documents above.
   **When in doubt, ASK. Never design, assume or invent business rules.**
-- The business **has no color palette, logo or visual identity**. Do not create or suggest one on your own; use the default MantineUI theme until instructed otherwise.
+- The business **has no color palette, logo or visual identity**. Do not create or suggest one; use the default MantineUI theme until instructed otherwise.
 
 ---
 
 ## 2. Mandatory standards for all generated code
 
-All code produced must follow the 4 standards below at the same time:
-
 | Standard | Practical application |
 |---|---|
-| **SOLID** | Classes/functions with a single responsibility; extension through abstractions (not modification); substitutable contracts; lean interfaces; depend on abstractions, not implementations. |
-| **Clean Code** | Expressive names, small functions, no duplication, no comments compensating for bad code, explicit error handling, no "magic numbers". |
-| **Clean Architecture** | Layered separation with dependencies always pointing inward (domain). The domain knows nothing about Django, the ORM, HTTP or frameworks. |
-| **REST API** | Resources named with plural nouns, semantic HTTP verbs (GET/POST/PUT/PATCH/DELETE), correct status codes, consistent JSON responses, route versioning (e.g. `/api/v1/...`). |
+| **SOLID** | Single responsibility; extension through abstractions; substitutable contracts; lean interfaces; depend on abstractions, not implementations. |
+| **Clean Code** | Expressive names, small functions, no duplication, explicit error handling, no "magic numbers". |
+| **Clean Architecture** | Layers with dependencies pointing inward (domain). The domain knows nothing about Django, the ORM, HTTP, RabbitMQ or payment gateways. |
+| **REST API** | Plural-noun resources, semantic HTTP verbs, correct status codes, consistent JSON, versioned routes (e.g. `/api/v1/...`). |
 
-### 2.1 Clean Architecture guidelines (Django backend)
+### 2.1 Clean Architecture (Django backend)
 
-Layers, from the inside out:
+1. **Domain** — entities (Property, RoomType, Room, GuestProfile, Reservation, Folio), value objects (e.g. Money), state machines, repository interfaces. Pure Python.
+2. **Application** — use cases (booking, check-in, night audit, check-out…) depending only on ports.
+3. **Infrastructure** — Django ORM, PostgreSQL repositories, payment gateway adapter, channel manager adapter, email/i18n, RabbitMQ, cron jobs.
+4. **Interface** — REST views, serializers, webhooks, routing.
 
-1. **Domain** — entities, value objects, invariant rules and repository interfaces. Pure Python, no framework dependencies.
-2. **Application** — use cases that orchestrate the domain; depend only on abstractions (ports).
-3. **Infrastructure** — concrete implementations: Django ORM models, PostgreSQL repositories, external integrations.
-4. **Interface / Presentation** — REST views/controllers, serializers, routing. Convert HTTP ⇄ use case DTOs.
-
-Rules:
-- Dependencies point **only** from the outside in.
-- Django ORM models are **not** domain entities; map between them in the infrastructure layer.
-- Use dependency injection for repositories and external services (makes testing easier).
-- Each business module (section 4.5) is an isolated context with its own layers.
+Rules: dependencies only point inward; ORM models are not domain entities; external services are injected behind ports (gateway, channel manager, tax engine, clock).
 
 ### 2.2 Testing
 
-- Framework: **pytest** (backend).
-- Unit tests are mandatory for the domain and use cases (no database, using test doubles/fakes for ports).
-- Integration tests for repositories (PostgreSQL) and REST endpoints.
-- New code is not considered done without corresponding tests.
+- Unit tests for domain and use cases (no database; fakes for ports), integration tests for repositories, REST endpoints and webhooks.
+- State machines, tax calculation, folio balance, idempotency and concurrency must have dedicated tests.
+- New code is not done without tests.
 
 ---
 
-## 3. Technology stack and phases
-
-### 3.1 Version 1 — CURRENT PHASE ✅
+## 3. Technology stack (`docs/Tech Stack/Tools.md`)
 
 | Layer | Technologies |
 |---|---|
-| Backend | Python, Django, Poetry (dependency management) |
-| Database | PostgreSQL |
-| Testing | pytest |
-| Frontend | JavaScript, TypeScript, React, MantineUI |
-| Local infrastructure | Docker |
+| Front-end | HTML, CSS, JavaScript, React, TypeScript, MantineUI |
+| Backend | Python, Django, cron, RabbitMQ |
+| Infrastructure & Database | Docker, Kubernetes, Terraform, PostgreSQL, Zabbix, Protheus |
 
-### 3.2 Version 2 — next phase (DO NOT use yet)
-
-Everything in V1 **+** CI/CD, Kubernetes, AWS, RabbitMQ and deployment on a VPS.
-
-### 3.3 Version 3 — final phase (DO NOT use yet)
-
-Everything in V2 **+** monitoring with Zabbix and Protheus, and API hardening validation with tests in CI/CD.
-
-> ⚠️ **Phase changes only happen when the project owner explicitly requests them.**
-> Until then, do not introduce dependencies, configuration or code from phases V2/V3 (e.g. RabbitMQ queues, Kubernetes manifests, CI/CD pipelines, AWS SDKs).
-> It is only acceptable to keep the design decoupled enough to ease future evolution.
+> ⚠️ To confirm with the project owner: the project instructions also mention Poetry, pytest, CI/CD, AWS, VPS deployment and a phased rollout (V1 → V3) that only advances on request. `Tools.md` lists a single stack without phases. Until confirmed, do not assume `Tools.md` replaces the phasing.
 
 ---
 
-## 4. Business rules (per the official document)
+## 4. Business context (`Business Modeling.md`)
 
-### 4.1 Business model
-- **Target audience:** couples in a relationship.
-- **Profitability:** focus on high profit margins.
-- **Legal:** operation based on two types of contract:
-  - **Rental** (of the space/room);
-  - **Service provision** (consumption/service).
+**System:** cloud-native Property Management System (PMS) for high-turnover Canadian motels operating **multiple locations** (Bedford and Timberlea, Nova Scotia): real-time inventory distribution, front-desk operations, strict financial ledgers with Canadian tax compliance (GST/HST/PST), housekeeping workflows, enforcement of local property policies and Group/Corporate/Extended-Stay requests. **Only English and French** are supported, for guests and staff.
 
-### 4.2 Infrastructure and capacity
-- **28 rooms** in total, categorized as:
-  - Standard;
-  - Super Luxury Suites;
-  - **2 Master Suites**.
-- **A private garage is mandatory** for each room (room ⇄ garage relationship).
-- **Operational areas:** Reception, Kitchen and Stockroom.
-
-### 4.3 Operations and HR
-- Open **24 hours a day, 7 days a week**.
-- Team of **approximately 25 employees**, organized in **shifts** for uninterrupted coverage.
-
-### 4.4 Marketing and acquisition
-- **Channels:** online search (Google Ads / SEO) and physical traffic (highway billboards).
-- **Focus:** optimizing local search and roadside visibility.
-
-### 4.5 System modules (architectural impact)
-
-| Module | Defined responsibility |
+### 4.1 Personas / roles
+| Persona | Needs |
 |---|---|
-| **Rental Management (Core)** | Real-time occupancy map; time and status control for the 28 rooms/garages. |
-| **Billing and POS** | Unified charging of the rental together with additional services and kitchen orders. |
-| **Inventory Control** | Centralized management of kitchen supplies, minibar items and cleaning supplies. |
-| **HR Management** | Schedule and time-clock control for the ~25 employees in the 24/7 regime. |
-| **Metrics (BI/CRM)** | Tracking the customer's conversion source (Google vs. Billboard) to calculate marketing ROI. |
+| Front Desk Agent (primary) | Walk-ins, check-ins, phone calls. Fast, keyboard-friendly dashboard flagging missing requirements (deposit, ID). |
+| General Manager / Owner | Yield management, occupancy, financial reporting, Night Audit reports, tax summaries, OTA channel mapping. |
+| Housekeeper | Mobile/tablet; real-time room list grouped by `Checkout/Dirty`, `Stayover`, `Clean`; no financial data. |
+| Head Housekeeper | Verifies cleaned rooms (Cleaning → Available). |
+| Night Auditor | Graveyard shift; runs End of Day: posts room charges and taxes to occupied rooms at a cutoff time. |
+| Guest | Chooses the location, then books through the public widget (EN/FR); sees strict policies before paying; can submit Group/Corporate/Extended-Stay requests. |
 
-> The **Rental Management** module is the core domain; the others are supporting domains.
+### 4.2 Core entities
+- **Property** — each location (Bedford, Timberlea): own timezone (both America/Halifax), CAD, tax jurisdiction and front-desk hours. RoomTypes, Rooms, inventory, Reservations, Folios and Night Audit runs belong to one property.
+- **RoomType** (template, e.g. "Double Queen") and **Room** (physical asset, e.g. "Room 101").
+- **GuestProfile** — PII; `PIPEDA_consent_flag`; supports anonymization.
+- **Reservation** — `Unconfirmed → Confirmed → In-House → Checked-Out`, plus `Canceled` / `No-Show`.
+- **StayRequest** — Group, Corporate or Extended-Stay request for one or both properties.
+- **Folio** — one per reservation; double-entry ledger of Charges (room rate, fines) and Payments (cash, credit card, deposits). Balance must be 0.00 to check out.
+
+### 4.3 Room state machine
+`Available → Occupied` (check-in) `→ Dirty` (check-out) `→ Cleaning → Available` (verified by Head Housekeeper). A guest can never be placed in an uncleaned room.
+
+### 4.4 Guest lifecycle
+1. **Booking (direct or OTA webhook):** location choice → availability per property with concurrency check → totals with localized taxes → T&C acceptance (Age 21+, No Pets, No Smoking/Cannabis) → card tokenization → reservation + confirmation email in the chosen language.
+2. **Check-in (from 4:00 PM):** government ID check; age < 21 blocks check-in unless management hard override; **$250 CAD pre-authorization hold**; reservation → In-House, room → Occupied.
+3. **Stay & Night Audit:** scheduled per property (e.g. 2:00 AM local) posting of nightly rate + daily taxes to every In-House folio.
+4. **Check-out (strictly by 11:00 AM):** zero balance → release hold; violation (e.g. smoke) → $250 Cannabis Cleaning Fine captured from the hold; reservation → Checked-Out, room → Dirty; zero-balance invoice emailed.
+
+### 4.5 Multi-property operation
+| Property | Front-desk hours |
+|---|---|
+| Bedford, NS | 24 hours |
+| Timberlea, NS | 8:00 AM to 12:00 AM (midnight), daily |
+
+Availability, overbooking prevention, taxes (jurisdiction of the property), Night Audit (property's local time) and reports are evaluated per property.
+
+### 4.6 Group, Corporate & Extended-Stay requests
+- Not instant bookings: submitted through a public EN/FR form and handled by staff.
+- Form: name*, email*, phone, property* (Bedford, Timberlea or Both), request type* (Group Booking, Extended Stay, Corporate Accommodation), message* (* required).
+- Organizations that book regularly can apply for a corporate/organization discount.
+- PIPEDA applies; public forms need spam protection.
+
+### 4.7 Languages
+- Only **English and French**, for the guest-facing experience (widget, forms, emails, invoices) and the staff interface.
+- Guest communications always follow the guest's chosen language.
+
+### 4.8 Architectural constraints (non-negotiable)
+- **Money:** never `float`/`double`; use `Decimal` or integer cents. Modular tax engine (rates vary by province/municipality).
+- **Idempotency:** channel manager webhooks use the OTA Booking ID as idempotency key.
+- **Time:** store all timestamps in UTC; convert at the presentation layer; Night Audit cron is timezone-aware.
+- **Security / PIPEDA / PCI-DSS:** no own card storage — gateway hosted elements (Stripe/Adyen); "Forget Me" scrubs PII, keeping only anonymous demographic data attached to financial records.
+- **Concurrency:** optimistic locking on `RoomInventory` to prevent overbooking.
 
 ---
 
-## 5. UNDEFINED points — ask before implementing
+## 5. Open points — ask before implementing
 
-The items below are **not covered** in the business document. Do not assume values, flows or rules for them — request a definition from the project owner:
-
-- Number of rooms per category (Standard × Super Luxury); only the 2 Master Suites are defined.
-- Rental billing modes and units (periods, grace times, extra hours, overnight stays, etc.).
-- Price table per category and variation rules (day/time/promotions).
-- List and lifecycle of room/garage **statuses** (e.g. available, occupied, cleaning, maintenance).
-- Customer check-in/check-out flow and what is recorded about the customer (data, privacy/LGPD).
-- Accepted payment methods and bill-closing rules.
-- Menu, minibar items, additional services and inventory write-off rules.
-- Access profiles/permissions per role (reception, kitchen, stockroom, management, etc.).
-- Shift definitions, scheduling rules and time-clock rules.
-- How the customer's source (Google vs. Billboard) will be captured and which ROI metrics are expected.
-- Tax requirements (invoice/receipt issuance) and contract requirements (rental × service provision).
+- Tax rate: the document's example is 15% HST (Nova Scotia), but the NS HST has been **14% since April 1, 2025**. Municipal levies and rounding rules are undefined.
+- Number of rooms and room types; room type attributes and rate structure.
+- Multi-property: staff assignment per property, shared guest profiles, consolidated reports, Timberlea arrivals while the desk is closed, separate OTA listings, policies identical or per property.
+- Stay requests: handling role, statuses/response time, group and extended-stay thresholds, corporate discount rules, conversion into reservations, master folio, pricing/deposit/cancellation.
+- Staff language: saved preference or per session; default language.
+- Payment gateway (Stripe or Adyen); when room charges are paid; cash guests and deposits; partial hold capture; hold expiration.
+- Reservation transitions to Canceled/No-Show; cancellation/no-show fees.
+- Mapping between housekeeping groups (Checkout/Dirty, Stayover, Clean) and room states; extra states (Out of Order).
+- Night Audit cutoff time and re-run behavior.
+- Fines other than the Cannabis Cleaning Fine; how housekeeping reports violations.
+- Channel manager (e.g. SiteMinder) contract, modifications/cancellations, OTA channels.
+- Permission matrix per role; authentication policy.
+- Early check-in / late check-out handling.
+- Report contents (Night Audit, tax summary, occupancy/yield KPIs).
+- Stack phasing (see section 3).
 
 ---
 
-## 6. Quick checklist before delivering any code
+## 6. Checklist before delivering any code
 
-- [ ] Does it follow SOLID, Clean Code, Clean Architecture and REST?
-- [ ] Does it use only **current phase (V1)** technologies?
-- [ ] Is every business rule applied documented in this file or confirmed by the project owner?
-- [ ] Does it have pytest tests (backend) covering the domain and use cases?
-- [ ] Does it avoid introducing an undefined visual identity (colors/logo)?
+- [ ] SOLID, Clean Code, Clean Architecture and REST respected?
+- [ ] Only technologies approved for the current phase?
+- [ ] Every business rule applied is documented or confirmed by the project owner?
+- [ ] Money as Decimal/cents, timestamps in UTC, idempotency and locking where required?
+- [ ] Tests cover domain, use cases and the critical constraints?
+- [ ] No invented visual identity?
