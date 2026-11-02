@@ -1,4 +1,5 @@
 [US-16] Policy Violation Fine
+
 # User Story
 
 As a Front Desk Agent, I want to add a fine to the folio when housekeeping reports a policy violation, So that the cost of the violation is charged to the guest.
@@ -16,11 +17,11 @@ As a Front Desk Agent, I want to add a fine to the folio when housekeeping repor
 
 # Business Rules
 
-* The Cannabis Cleaning Fine is $250 CAD. And can me mutable by General Manager at configs.
+* The Cannabis Cleaning Fine is $250 CAD. The General Manager can change this amount in the settings.
 * Fines are settled by capturing funds from the pre-authorized hold.
-* Other fine types (e.g., pets, damages) and their amounts.
-* The housekeeper will log in into the system and report the ocorrence with evidences.
-* The system must have a page in configs where General Manager can add, edit and remove fines with it's values. No complexity added to description, so no new issue about the case.
+* Other fine types (e.g., pets, damages) and their amounts are defined by the General Manager.
+* The Housekeeper logs in to the system and reports the occurrence with evidence.
+* The system must have a settings page where the General Manager can add, edit and remove fines and their amounts. This is a simple settings page, so it does not need a separate user story.
 
 # Definition of Done (DoD)
 

@@ -1,4 +1,5 @@
 [US-23] Occupancy Reporting
+
 # User Story
 
 As a General Manager, I want to see occupancy rates per period, So that I can manage the property's yield.
@@ -12,7 +13,7 @@ As a General Manager, I want to see occupancy rates per period, So that I can ma
 
 # Business Rules
 
-None
+* No business rules are defined yet.
 
 # Definition of Done (DoD)
 

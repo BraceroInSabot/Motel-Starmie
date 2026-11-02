@@ -1,4 +1,5 @@
 [US-07] OTA Booking Ingestion via Channel Manager Webhook
+
 # User Story
 
 As a General Manager, I want bookings pushed by the channel manager to be created exactly once, So that repeated webhooks never cause duplicate reservations or overbooking.
@@ -22,8 +23,8 @@ As a General Manager, I want bookings pushed by the channel manager to be create
 
 * The OTA Booking ID is the idempotency key.
 * OTA bookings follow the same booking phase as direct bookings (availability check, taxes).
-* Every requisiton for or from the OTA will be treated as a mockup because at this moment, on a real business situation, the motel would need to be in contact with the OTA integration team.
-* All OTA mockups will be correct.
+* All requests to and from the OTA are mocked, because a real integration would require the motel to work directly with the OTA's integration team.
+* All mocked OTA data is assumed to be valid.
 
 # Definition of Done (DoD)
 

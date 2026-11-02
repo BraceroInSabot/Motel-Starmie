@@ -1,4 +1,5 @@
 [US-18] Housekeeping Room Board
+
 # User Story
 
 As a Housekeeper, I want a real-time mobile list of rooms grouped by status, So that I know which rooms to clean and can update their state instantly.
@@ -23,7 +24,7 @@ As a Housekeeper, I want a real-time mobile list of rooms grouped by status, So 
 * The interface must work on mobile and tablet devices.
 * The room list is real-time.
 * Housekeepers see no financial data.
-* Room states and equivalency groups: Available (Clean); Occupied (Stayover); Dirty (Checkout/Dirty); Cleaning (Checkout/Dirty)
+* Room states map to board groups as follows: Available → Clean; Occupied → Stayover; Dirty → Checkout/Dirty; Cleaning → Checkout/Dirty.
 
 # Definition of Done (DoD)
 

@@ -1,4 +1,5 @@
 [US-20] Guest Profile with PIPEDA Consent
+
 # User Story
 
 As a Front Desk Agent, I want to maintain guest profiles with a PIPEDA consent record, So that personal information is handled in compliance with the law.
@@ -18,8 +19,8 @@ As a Front Desk Agent, I want to maintain guest profiles with a PIPEDA consent r
 
 * GuestProfile contains PII and must include the PIPEDA_consent_flag.
 * Guest profiles must support data anonymization (see US-21).
-* Profile fields at ER diagram.
-* Whenever the consent is not given, the user cannot be registered.
+* The profile fields are those defined in the ER diagram.
+* If consent is not given, the guest cannot be registered.
 
 # Definition of Done (DoD)
 

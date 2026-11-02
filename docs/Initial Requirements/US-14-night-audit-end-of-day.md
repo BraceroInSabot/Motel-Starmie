@@ -1,4 +1,5 @@
 [US-14] Night Audit (End of Day)
+
 # User Story
 
 As a Night Auditor, I want the End of Day process to post the nightly room rate and taxes to every in-house reservation, So that all folios are kept up to date.
@@ -22,9 +23,9 @@ As a Night Auditor, I want the End of Day process to post the nightly room rate 
 
 * The Night Audit iterates through all In-House reservations.
 * The scheduled job (cron) must be timezone-aware; timestamps are stored in UTC.
-* The exact cutoff time must be 2:00 AM.
-* On a failure, the script must record its log in a file and warn the developer email guibragon@gmail.com.
-* The no-show process initialize at 1:00 AM.
+* The cutoff time is 2:00 AM (property local time).
+* If the Night Audit fails, it must write the error to a log file and send a warning email to the developer (guibragon@gmail.com).
+* The no-show process starts at 1:00 AM.
 
 # Definition of Done (DoD)
 

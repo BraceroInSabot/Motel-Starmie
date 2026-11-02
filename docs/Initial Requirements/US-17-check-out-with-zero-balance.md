@@ -1,4 +1,5 @@
 [US-17] Check-out with Zero Balance
+
 # User Story
 
 As a Front Desk Agent, I want to check out a guest only when the folio balance is zero, So that every stay is fully settled.

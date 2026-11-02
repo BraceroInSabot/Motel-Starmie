@@ -1,4 +1,5 @@
 [US-08] OTA Channel Mapping
+
 # User Story
 
 As a General Manager, I want to map the property's room types to OTA channels, So that inventory is distributed correctly across channels.

@@ -1,4 +1,5 @@
 [US-11] Reservation Lifecycle Management
+
 # User Story
 
 As a Front Desk Agent, I want reservations to follow a controlled lifecycle, So that the state of each booking is always consistent.
@@ -21,8 +22,8 @@ As a Front Desk Agent, I want reservations to follow a controlled lifecycle, So 
 # Business Rules
 
 * Reservation states: Unconfirmed → Confirmed → In-House → Checked-Out, plus Canceled/No-Show.
-* A reservation is canceled when a guest with a reservation status like Unconfirmed, Confirmed or In-House cancels on website or a staff user like Front Desk Agent or General Manager cancel.
-* A reservation is setted with no-show if a guest with a confirmed reservation do not check-in. 
+* A reservation with the status Unconfirmed, Confirmed or In-House can be canceled by the guest on the website or by a staff member (Front Desk Agent or General Manager).
+* A reservation is marked as No-Show when a guest with a Confirmed reservation does not check in.
 * The No-Show status is applied only after a grace period (in minutes). The General Manager sets this period, and it can be different for each property.
 * Cancellation and no-show fees are optional and must be configured for each property by the General Manager.
 * Whenever a cancellation or no-show fee is generated, it is stored in a dashboard accessible only to General Managers. From there, they can send emails to guests warning them about the generated fee.

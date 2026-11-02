@@ -1,4 +1,5 @@
 [US-21] Forget Me (PII Anonymization)
+
 # User Story
 
 As an authorized staff member, I want to scrub a guest's personal information on request, So that the property complies with PIPEDA.
@@ -18,8 +19,8 @@ As an authorized staff member, I want to scrub a guest's personal information on
 
 * The "Forget Me" action lives in the Guest Profile module.
 * Anonymization keeps only anonymous demographic data attached to financial records.
-* Every roles, except by Housekeeper and Head Housekeeper, can execute "Forget Me".
-* full_name_enc, email_enc, phone_enc, and email_hash attributes are nullable after anonimization
+* Every role except Housekeeper and Head Housekeeper can execute "Forget Me".
+* After anonymization, the full_name_enc, email_enc, phone_enc and email_hash attributes are set to null.
 
 # Definition of Done (DoD)
 

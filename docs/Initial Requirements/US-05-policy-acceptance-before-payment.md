@@ -1,4 +1,5 @@
 [US-05] Policy Acceptance Before Payment
+
 # User Story
 
 As a guest, I want to be clearly shown the property's policies and accept them before paying, So that I know the rules of my stay in advance.
@@ -18,15 +19,15 @@ As a guest, I want to be clearly shown the property's policies and accept them b
    * When the Terms & Conditions are displayed
    * Then they are shown in the selected language
 
-Business Rules
+# Business Rules
 
 * Terms & Conditions include: Age 21+, No Pets, No Smoking/Cannabis.
 * Policies must be accepted before payment information is taken.
 * Policies are displayed in EN or FR, according to the guest's choice.
-* Full Terms & Conditions text, including cancellation policy.
-* User's acceptance must be stored as evidence including timestamp and T&C version.
+* The full Terms & Conditions text, including the cancellation policy, is not yet defined.
+* The guest's acceptance must be stored as evidence, including the timestamp and the T&C version.
 
-Definition of Done (DoD)
+# Definition of Done (DoD)
 
 * [ ] Code reviewed via Pull Request
 * [ ] Test coverage implemented

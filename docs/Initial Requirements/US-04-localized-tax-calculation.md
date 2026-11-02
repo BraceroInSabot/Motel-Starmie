@@ -1,4 +1,5 @@
 [US-04] Localized Tax Calculation
+
 # User Story
 
 As a General Manager, I want reservation totals and nightly charges to apply the correct localized taxes, So that the property complies with Canadian tax legislation.
@@ -23,9 +24,9 @@ As a General Manager, I want reservation totals and nightly charges to apply the
 * The tax engine must support GST, HST and PST.
 * The tax engine must be modular, because rates change by province and municipal laws.
 * Floating-point types (float/double) are forbidden for currency.
-* Any monetary amount must have its value and currency at the dictionaries.
-* Applicable municipal taxes or levies, if any.
-* Rounding rule (per line or per folio) and who maintains the tax rates.
+* Every monetary amount must be stored with both its value and its currency.
+* Applicable municipal taxes or levies, if any, are not yet defined.
+* The rounding rule (per line or per folio) and who maintains the tax rates are not yet defined.
 
 # Definition of Done (DoD)
 

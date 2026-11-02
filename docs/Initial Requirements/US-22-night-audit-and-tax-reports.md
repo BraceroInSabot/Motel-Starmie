@@ -1,7 +1,8 @@
-[US-22] Night Audit and Tax Reports
+[US-22] Night Audit, Tax Summary and Locked Fee Reports
+
 # User Story
 
-As a General Manager, I want Night Audit reports, tax summaries and locked fees So that I can monitor financial results, meet tax obligations and free locked fees when necessary.
+As a General Manager, I want Night Audit reports, tax summaries and a Locked Fee report, So that I can monitor financial results, meet tax obligations and release locked funds when necessary.
 
 # Acceptance Criteria
 
@@ -14,9 +15,9 @@ As a General Manager, I want Night Audit reports, tax summaries and locked fees 
    * When I generate the tax summary for that period
    * Then the system displays the totals per tax type (GST/HST/PST)
 * Scenario 3: Locked Fee Report
-   * Given the guest have already put his card information and now cancelled his stay
-   * When I open the Fee's report
-   * Then I want to free the money at that instant
+   * Given a guest has entered their card details and then canceled their stay
+   * When I open the Locked Fee report
+   * Then I can release the held amount immediately
 
 # Business Rules
 

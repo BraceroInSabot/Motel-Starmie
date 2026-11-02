@@ -1,4 +1,5 @@
 [US-03] Availability Search
+
 # User Story
 
 As a guest, I want to select my stay dates and see the available room types with their totals, So that I can choose a room before booking.
@@ -12,7 +13,7 @@ As a guest, I want to select my stay dates and see the available room types with
 * Scenario 2: No availability
    * Given no room is available for the selected dates
    * When I search
-   * Then the system informs that there are no rooms available for those dates
+   * Then the system informs me that no rooms are available for those dates
 * Scenario 3: Bilingual experience
    * Given I am on the booking widget
    * When I select French (or English) as my language
@@ -21,11 +22,11 @@ As a guest, I want to select my stay dates and see the available room types with
 # Business Rules
 
 * The booking widget is bilingual (EN/FR).
-* Availability is checked against the room type inventory, with concurrency control (#06).
-* Amounts are in CAD and include localized taxes (#04).
+* Availability is checked against the room type inventory, with concurrency control (see US-06).
+* Amounts are in CAD and include localized taxes (see US-04).
 * Check-in starts at 4:00 PM and check-out is strictly by 11:00 AM.
-* Rate structure (e.g., by season, day of week, length of stay).
-* Minimum (1 day) & maximum (5 days) stay and booking window.
+* The rate structure (e.g., by season, day of the week or length of stay) is not yet defined.
+* The minimum stay is 1 day and the maximum stay is 5 days. The booking window is not yet defined.
 
 # Definition of Done (DoD)
 

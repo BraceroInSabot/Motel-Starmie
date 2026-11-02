@@ -1,5 +1,7 @@
 [US-01] Staff Authentication and Role-Based Access
+
 # User Story
+
 As a motel staff member, I want to log into the Starmie PMS with my credentials, So that I can access only the features my role requires.
 
 # Acceptance Criteria
@@ -23,13 +25,12 @@ As a motel staff member, I want to log into the Starmie PMS with my credentials,
 * Access is controlled by role (RBAC).
 * Housekeepers have no access to financial data.
 * Only management can perform the age-policy override at check-in (see US-12).
-* Complete permission matrix per role. Can be modified by General Manager.
-* Login identifier, password policy, lockout after 10 times failed attempts and session timeout - 12 hours.
-* Head Housekeeper is a attribute (previlege) conceded by General Manager for any Housekeeper.
+* Each role has a complete permission matrix, which the General Manager can modify.
+* An account is locked after 10 failed login attempts, and a session expires after 12 hours. The login identifier and the password policy are not yet defined.
+* Head Housekeeper is a privilege that the General Manager can grant to any Housekeeper.
 
 # Definition of Done (DoD)
 
 * [ ] Code reviewed via Pull Request
 * [ ] Test coverage implemented
 * [ ] Documentation and Wiki updated
-

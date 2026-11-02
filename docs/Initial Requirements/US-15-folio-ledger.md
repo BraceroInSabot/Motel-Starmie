@@ -1,4 +1,5 @@
 [US-15] Folio Ledger
+
 # User Story
 
 As a Front Desk Agent, I want every reservation to have a folio recording all charges and payments, So that the guest's balance is always accurate.
@@ -23,8 +24,8 @@ As a Front Desk Agent, I want every reservation to have a folio recording all ch
 * Every reservation has exactly one folio.
 * The folio is a double-entry accounting ledger.
 * Charges include room rate and fines; payments include cash, credit card and deposits.
-* Also includes corrections (voids, refunds) and who authorizes them.
-* Also register payment split folios.
+* The folio also records corrections (voids and refunds) and the staff member who authorized each one.
+* The folio also supports split payments.
 
 # Definition of Done (DoD)
 

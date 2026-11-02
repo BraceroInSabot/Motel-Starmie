@@ -1,4 +1,5 @@
 [US-19] Room State Machine and Cleaning Verification
+
 # User Story
 
 As a Head Housekeeper, I want room states to follow a strict state machine and to verify cleaned rooms, So that no guest is ever placed in an uncleaned room.
@@ -18,15 +19,15 @@ As a Head Housekeeper, I want room states to follow a strict state machine and t
    * When I verify that the cleaning is complete
    * Then the room changes to Available
 
-Business Rules
+# Business Rules
 
 * Room states: Available → Occupied (upon check-in) → Dirty (upon check-out) → Cleaning (in progress) → Available.
 * Only the Head Housekeeper's verification moves a room from Cleaning to Available.
 * A guest can only be checked into an Available room.
-* Only a Head Housekeeper or a General Manager can moves a room from any state to Unavailable or Maintenance
-* If the guest want the room to be clear during his stay, he will need to contact a housekeeper or General Manager. This type of user can move the status to dirty and then, when the housekeeper clean the room, he mark CLEANED and the state return to occupied.
+* Only a Head Housekeeper or the General Manager can move a room from any state to Unavailable or Maintenance.
+* If a guest wants the room cleaned during their stay, they must ask a Housekeeper or the General Manager, who moves the room to Dirty. After cleaning the room, the Housekeeper marks it as CLEANED and the room returns to Occupied.
 
-Definition of Done (DoD)
+# Definition of Done (DoD)
 
 * [ ] Code reviewed via Pull Request
 * [ ] Test coverage implemented

@@ -1,4 +1,5 @@
 [US-13] Deposit Pre-Authorization Hold
+
 # User Story
 
 As a Front Desk Agent, I want the system to place a deposit hold on the guest's card at check-in, So that the property is protected against damages and policy violations.
@@ -20,10 +21,10 @@ As a Front Desk Agent, I want the system to place a deposit hold on the guest's 
 
 # Business Rules
 
-* The deposit is a $250 CAD pre-authorization hold placed via the payment gateway API. This value can me modified by Genearl Manager at PMS configs.
+* The deposit is a $250 CAD pre-authorization hold placed through the payment gateway API. The General Manager can change this amount in the PMS settings.
 * Check-in sets the reservation to In-House and the room to Occupied.
-* Deposit handling for guests without a credit card (e.g., cash) can be registered by Front Desk Agents. They register it at the system and input his user password to confirm. 
-* Holds do not need renewal, because the maximum stay (5 nights) is shorter than the gateway’s authorization period
+* For guests without a credit card (e.g., paying in cash), a Front Desk Agent registers the deposit in the system and enters their own password to confirm it.
+* Holds do not need renewal, because the maximum stay (5 nights) is shorter than the gateway's authorization period.
 * The Front Desk Agent assigns an Available room of the booked room type at check-in.
 
 # Definition of Done (DoD)

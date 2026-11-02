@@ -1,4 +1,5 @@
 [US-10] Front Desk Dashboard
+
 # User Story
 
 As a Front Desk Agent, I want a fast, keyboard-friendly dashboard that flags missing requirements, So that I can process guests without overlooking mandatory steps.
@@ -22,7 +23,7 @@ As a Front Desk Agent, I want a fast, keyboard-friendly dashboard that flags mis
 
 * The dashboard must flag at least a missing deposit and a missing ID verification.
 * The dashboard must be fast and keyboard-friendly.
-* The system will process everything in 1.5 sec or lower.
+* The system must process every request in 1.5 seconds or less.
 
 # Definition of Done (DoD)
 
