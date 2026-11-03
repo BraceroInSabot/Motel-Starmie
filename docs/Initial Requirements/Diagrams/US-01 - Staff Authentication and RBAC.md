@@ -20,6 +20,12 @@
 | Housekeepers can never receive financial access | `PermissionMatrix.FINANCIAL` guard |
 | GM cannot remove their own settings and permissions access | `PermissionMatrix.LOCKED_FOR_GM` guard |
 | Only the GM performs the age-policy override | `Permission.AGE_OVERRIDE` locked to GM |
+| First GM created by seed data from configuration, temporary password | `SeedFirstGeneralManager` (infrastructure, data migration), design notes |
+| Self-service reset: single-use email link valid 1 hour; same message whether or not the email exists | `RequestPasswordResetUseCase`, `PASSWORD_RESET_TOKEN`, sequence 3.4 |
+| GM reset issues a new temporary password | `ResetStaffPasswordUseCase` |
+| Inactive staff cannot log in or request a reset | `StaffUser.can_log_in()`, reset request ignored |
+| Interface language per account (US-24) | `STAFF_USER.language` |
+| Settings include company details (legal name, GST/HST number) | `SETTINGS` permission (US-17) |
 
 ---
 
@@ -131,6 +137,25 @@ classDiagram
         class UnlockAccountUseCase {
             +execute(staff_id) None
         }
+        class RequestPasswordResetUseCase {
+            +execute(email) None
+        }
+        class ResetPasswordWithTokenUseCase {
+            +execute(token, new_password) None
+        }
+        class ResetStaffPasswordUseCase {
+            <<GM>>
+            +execute(staff_id, gm) TemporaryCredentials
+        }
+        class PasswordResetTokenRepository {
+            <<Port>>
+            +issue(staff_id, expires_at) str
+            +consume(token, now) StaffId
+        }
+        class Notifier {
+            <<Port>>
+            +password_reset_link(staff, link, language) None
+        }
         class GrantHeadHousekeeperUseCase {
             +execute(staff_id, granted) None
         }
@@ -166,8 +191,17 @@ classDiagram
         class DjangoPermissionMatrixRepository
         class Argon2PasswordHasher
         class CommonPasswordListChecker
-        class DbSessionStore
+        class DbSessionStore {
+            <<Django database sessions>>
+        }
         class PostgresAuditLog
+        class DjangoPasswordResetTokenRepository
+        class EmailNotifier {
+            <<outbox, Tech Spec 3.1>>
+        }
+        class SeedFirstGeneralManager {
+            <<data migration · env INITIAL_GM_EMAIL>>
+        }
     }
 
     namespace Interface {
@@ -176,11 +210,14 @@ classDiagram
             POST /api/v1/auth/login
             POST /api/v1/auth/logout
             POST /api/v1/auth/password
+            POST /api/v1/auth/password-reset
+            POST /api/v1/auth/password-reset/confirm
         }
         class StaffViews {
             <<REST · GM>>
             /api/v1/staff
             POST /api/v1/staff/id/unlock
+            POST /api/v1/staff/id/password-reset
         }
         class PermissionViews {
             <<REST · GM>>
@@ -217,6 +254,16 @@ classDiagram
     AuthViews --> ChangePasswordUseCase
     StaffViews --> CreateStaffAccountUseCase
     StaffViews --> UnlockAccountUseCase
+    StaffViews --> ResetStaffPasswordUseCase
+    AuthViews --> RequestPasswordResetUseCase
+    AuthViews --> ResetPasswordWithTokenUseCase
+    RequestPasswordResetUseCase --> PasswordResetTokenRepository
+    RequestPasswordResetUseCase --> Notifier
+    ResetPasswordWithTokenUseCase --> PasswordResetTokenRepository
+    ResetPasswordWithTokenUseCase --> PasswordPolicy
+    DjangoPasswordResetTokenRepository ..|> PasswordResetTokenRepository
+    EmailNotifier ..|> Notifier
+    SeedFirstGeneralManager ..> StaffRepository
     PermissionViews --> UpdatePermissionMatrixUseCase
     RequiresPermission --> AuthorizeRequest
 ```
@@ -228,6 +275,9 @@ classDiagram
 - **Head Housekeeper:** `HEAD_HOUSEKEEPER_ACTIONS` is allowed to a Housekeeper only when `is_head_housekeeper` is true.
 - **Generic error:** `LoginUseCase` returns the same error for an unknown email and a wrong password (Scenario 2). A locked account is rejected even with the right password.
 - **Temporary password:** while `must_change_password` is true, `AuthorizeRequest` only allows the change-password endpoint (Scenario 5).
+- **Password reset (Scenarios 7 and 8):** the reset request always returns `202` with the same message, so it does not reveal which emails exist. For an active account, a random token is stored only as a hash, expires 1 hour after it is sent and can be used once. The email is sent in the staff member's language (US-24). The GM reset sets a new temporary password and `must_change_password = true`.
+- **First GM (seed):** a data migration in the infrastructure layer creates the first `GENERAL_MANAGER` from `INITIAL_GM_EMAIL` and `INITIAL_GM_TEMPORARY_PASSWORD` when no GM exists, with `must_change_password = true`. It does nothing if a GM already exists.
+- **Sessions:** implemented with Django database sessions (Tech Spec 1.8); the 12-hour limit is absolute and is never extended by activity.
 
 ---
 
@@ -236,7 +286,8 @@ classDiagram
 ```mermaid
 erDiagram
     PROPERTY ||--o{ STAFF_USER : "employs"
-    STAFF_USER ||--o{ STAFF_SESSION : "opens"
+    STAFF_USER ||--o{ DJANGO_SESSION : "opens"
+    STAFF_USER ||--o{ PASSWORD_RESET_TOKEN : "requests"
     STAFF_USER ||--o{ AUDIT_LOG : "acts in"
 
     STAFF_USER {
@@ -248,16 +299,23 @@ erDiagram
         boolean is_head_housekeeper "Housekeeper only"
         boolean is_active
         boolean must_change_password
+        char language "EN or FR, default EN, US-24"
         int failed_login_count
         timestamptz locked_until "null when not locked"
         timestamptz created_at
     }
-    STAFF_SESSION {
+    DJANGO_SESSION {
+        varchar session_key PK "Django database session"
+        text session_data "staff id and login time"
+        timestamptz expire_date "login + 12 h, never extended"
+    }
+    PASSWORD_RESET_TOKEN {
         uuid id PK
         uuid staff_id FK
+        varchar token_hash UK
+        timestamptz expires_at "sent + 1 h"
+        timestamptz used_at "single use"
         timestamptz created_at
-        timestamptz expires_at "created_at + 12 h"
-        timestamptz revoked_at
     }
     ROLE_PERMISSION {
         varchar role PK
@@ -372,7 +430,41 @@ flowchart TD
     F -- yes --> G[Run the use case]
 ```
 
-### 3.4 Domain events
+### 3.4 Password reset — Scenarios 7 and 8
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Staff as Staff member
+    actor GM as General Manager
+    participant View as AuthViews and StaffViews
+    participant Req as RequestPasswordResetUseCase
+    participant Confirm as ResetPasswordWithTokenUseCase
+    participant Mail as Notifier
+
+    alt self-service
+        Staff->>View: POST /auth/password-reset (email)
+        View->>Req: execute(email)
+        opt active account found
+            Req->>Req: token hash stored, expires in 1 hour
+            Req->>Mail: reset link in the staff language
+        end
+        View-->>Staff: 202 same message in every case
+        Staff->>View: POST /auth/password-reset/confirm (token, new password)
+        View->>Confirm: execute(token, new password)
+        alt token expired, used or unknown
+            Confirm-->>Staff: 400 link no longer valid
+        else valid token
+            Confirm->>Confirm: password rules checked, token marked used
+            Confirm-->>Staff: 204 password changed
+        end
+    else reset by the General Manager
+        GM->>View: POST /staff/{id}/password-reset
+        View-->>GM: 200 new temporary password, change required at next login
+    end
+```
+
+### 3.5 Domain events
 
 | Event | Raised when | Consumers |
 |---|---|---|
@@ -382,3 +474,5 @@ flowchart TD
 | `StaffAccountCreated` / `StaffAccountDeactivated` | GM manages accounts | Audit log, session revocation on deactivation |
 | `PermissionMatrixChanged` | GM edits the matrix | Audit log |
 | `HeadHousekeeperPrivilegeChanged` | GM grants or removes the privilege | Audit log |
+| `PasswordResetRequested` / `PasswordResetCompleted` | Self-service reset | Audit log |
+| `StaffPasswordResetByManager` | GM reset | Audit log |

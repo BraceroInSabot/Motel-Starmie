@@ -9,7 +9,8 @@
 | Exactly one folio per reservation | `FOLIO.reservation_id` unique, created with the reservation |
 | Double-entry ledger | `LedgerEntry` with balanced `LedgerLine` debits and credits |
 | Charge types: room night, taxes (HST, levy), fines, cancellation fee, no-show fee | `EntryType` (charges) |
-| Payment types: Stripe card, OTA prepaid, cash, deposit captured from a hold, cash deposit received and returned, refunds | `EntryType` (payments) |
+| Payment types: Stripe card, OTA prepaid, OTA prepaid adjustment, cash, deposit captured from a hold, cash deposit received and returned, refunds (Stripe or cash) | `EntryType` (payments) |
+| Lifecycle refunds (cancellation, No-Show, early departure) are not corrections | Posted by the system or a Front Desk Agent via `FolioService`; only `VoidEntryUseCase` and `IssueRefundUseCase` are GM-only |
 | Only these types; no manual charges | `PostingRules` maps each type to fixed accounts; no free-form endpoint |
 | Split payments | Many payment entries per folio |
 | Corrections GM only: void a charge, refund through Stripe or cash | `VoidEntryUseCase`, `IssueRefundUseCase` |
@@ -63,6 +64,7 @@ classDiagram
             NO_SHOW_FEE
             STRIPE_CARD
             OTA_PREPAID
+            OTA_PREPAID_ADJUSTMENT
             CASH
             DEPOSIT_CAPTURED
             CASH_DEPOSIT_RECEIVED
@@ -155,6 +157,7 @@ classDiagram
   | `CANCELLATION_FEE` / `NO_SHOW_FEE` | Guest receivable | Fee revenue |
   | `STRIPE_CARD` | Card (Stripe) | Guest receivable |
   | `OTA_PREPAID` | OTA receivable | Guest receivable |
+  | `OTA_PREPAID_ADJUSTMENT` | Guest receivable | OTA receivable |
   | `CASH` | Cash | Guest receivable |
   | `DEPOSIT_CAPTURED` | Card (Stripe) | Guest receivable |
   | `CASH_DEPOSIT_RECEIVED` | Cash | Cash deposits held |
@@ -162,6 +165,7 @@ classDiagram
   | `REFUND_STRIPE` / `REFUND_CASH` | Guest receivable | Card (Stripe) / Cash |
 
 - **Balance** = debits − credits on guest receivable. Cash deposit entries do not touch guest receivable, so they never change the amount the guest owes; fines deducted from a cash deposit are settled at check-out (US-17).
+- **OTA prepaid adjustment:** when an OTA guest leaves early (US-17), the unused part of the OTA prepaid amount is reversed (`OTA_PREPAID_ADJUSTMENT`). No money moves in the system; the OTA refunds the guest.
 - **Void (Scenario 5):** only charge entries can be voided; the reversing entry swaps debits and credits, stores `reverses_entry_id`, the reason and the GM. An entry can be reversed only once.
 - **Refund correction:** `REFUND_STRIPE` calls Stripe first and posts after success; `REFUND_CASH` is posted when the GM hands back cash.
 - **Database protection:** no `UPDATE` or `DELETE` grants on the ledger tables for the application role; a trigger rejects both.

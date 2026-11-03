@@ -1,6 +1,6 @@
 # US-11 — Reservation Lifecycle Management: Diagrams
 
-> Source: `US-11-reservation-lifecycle-management.md`. Related: US-06 (rejection), US-07 (OTA), US-13 (check-in), US-15 (folio), US-17 (check-out and early departure), US-22 (Held Funds report for failed refunds).
+> Source: `US-11-reservation-lifecycle-management.md`. Related: US-06 (rejection), US-07 (OTA), US-13 (check-in), US-15 (folio), US-17 (check-out and early departure), US-22 (Held Funds report for failed card refunds and owed cash refunds).
 
 ## Business rules reflected
 
@@ -15,7 +15,9 @@
 | Default grace period 60 minutes (1:00 AM), editable per property | `PROPERTY.no_show_grace_minutes` |
 | Optional fixed cancellation and no-show fees per property | `PROPERTY.cancellation_fee_amount`, `no_show_fee_amount` (nullable) |
 | Cancellation fee only within X hours before 4:00 PM on the arrival day; 0 = always | `CancellationFeePolicy`, `cancellation_fee_window_hours` |
-| Refund automatic through Stripe, minus the applicable fee | `RefundService` |
+| Refund minus the applicable fee, by the method used to pay: card → Stripe automatically; cash → at the desk | `RefundService` chooses `RefundMethod` from the folio payments |
+| Cash refund to an absent guest stays owed, shown in Held Funds, paid later from the reservation | `REFUND.status = OWED`, `PayCashRefundUseCase`, Scenario 8 |
+| Lifecycle refunds are not corrections, so Front Desk Agents perform them | `FRONT_DESK_WORK` permission on cancel and cash-refund endpoints |
 | OTA bookings: No-Show allowed, no refund or fee | `FeeAndRefundPolicy` skips channel `OTA` |
 | Canceled and No-Show release their nights | `RoomInventory.release()` |
 | Every status change recorded with who and when | `RESERVATION_STATUS_HISTORY` |
@@ -92,12 +94,21 @@ classDiagram
             +execute(now_utc) int
         }
         class RefundService {
-            +refund(reservation, amount) RefundResult
+            +refund(reservation, amount, guest_present) RefundResult
+        }
+        class PayCashRefundUseCase {
+            <<FRONT_DESK_WORK>>
+            +execute(refund_id, staff) None
+        }
+        class RefundMethod {
+            <<Enumeration>>
+            CARD
+            CASH
         }
         class FolioService {
             <<US-15>>
             +post_fee(folio, type, amount) None
-            +post_refund(folio, amount, stripe_ref) None
+            +post_refund(folio, method, amount, ref) None
         }
         class NotifyGuestAboutFeeUseCase {
             <<GM>>
@@ -132,6 +143,7 @@ classDiagram
         class ReservationStatusViews {
             <<REST · FRONT_DESK_WORK>>
             POST /api/v1/reservations/id/cancel
+            POST /api/v1/refunds/id/pay-cash
         }
         class GuestCancellationView {
             <<REST · public, token>>
@@ -164,6 +176,9 @@ classDiagram
     FeeAndRefundPolicy ..> Settlement
     CancellationFeePolicy ..> PropertyPolicy
     RefundService --> PaymentGateway
+    RefundService ..> RefundMethod
+    PayCashRefundUseCase --> FolioService
+    ReservationStatusViews --> PayCashRefundUseCase
     NotifyGuestAboutFeeUseCase --> Notifier
     MarkNoShowsJob --> MarkNoShowsUseCase
     StripePaymentGateway ..|> PaymentGateway
@@ -181,7 +196,8 @@ classDiagram
 - **Refund failures:** `REFUND.status = FAILED` stays visible in the Held Funds report (US-22) with a "Retry refund" action.
 - **Unconfirmed cancellations by staff** are rejections: reason `MOTEL_DECISION`, no fee (US-06). A guest canceling an Unconfirmed booking through the link is a `GUEST_REQUEST`.
 - **Guest link:** the token is random, stored only as a hash, and unique per reservation; it is included in the "booking received" and "booking confirmed" emails.
-- **Not defined by the stories:** how the refund is paid back when the stay was paid in cash (walk-ins, US-09). US-11 only describes Stripe refunds.
+- **Refund method (`RefundService`):** the method follows the folio's payments. Card payments (`STRIPE_CARD`) are refunded through Stripe (`REFUND_STRIPE` entry). Cash payments (`CASH`) are refunded in cash: if the guest is at the desk (cancellation at the desk, Scenario 7), the agent hands over the amount and the system posts `REFUND_CASH` at once; otherwise (No-Show, cancellation by link) a `REFUND` row with method `CASH` and status `OWED` is created and shown in the Held Funds report (US-22). `PayCashRefundUseCase` posts `REFUND_CASH` and sets the row to `PAID` when the guest collects it.
+- **Permissions:** cancellations and cash refunds need `FRONT_DESK_WORK`; GM corrections (US-15) are a separate flow.
 
 ---
 
@@ -228,15 +244,18 @@ erDiagram
         numeric amount
         char currency
         varchar reason "CANCELLATION, NO_SHOW, REJECTION, EARLY_DEPARTURE, CORRECTION"
-        varchar stripe_refund_id
-        varchar status "PENDING, SUCCEEDED, FAILED"
+        varchar method "CARD or CASH"
+        varchar stripe_refund_id "CARD only"
+        varchar status "CARD: PENDING, SUCCEEDED, FAILED. CASH: OWED, PAID"
         int attempts
         text last_error
+        uuid paid_by FK "CASH, staff who paid"
+        timestamptz paid_at
         timestamptz created_at
     }
     LEDGER_ENTRY {
         uuid id PK "US-15"
-        varchar entry_type "CANCELLATION_FEE, NO_SHOW_FEE, REFUND"
+        varchar entry_type "CANCELLATION_FEE, NO_SHOW_FEE, REFUND_STRIPE, REFUND_CASH"
         numeric amount
     }
     FEE_NOTIFICATION {
@@ -297,6 +316,7 @@ sequenceDiagram
         end
         opt channel is not OTA
             UC->>Refund: refund(amount paid minus fee)
+            Note over UC,Refund: card - Stripe refund<br/>cash, guest at the desk - cash handed over, REFUND_CASH<br/>cash, guest absent - cash refund OWED (Held Funds)
         end
         UC-->>Who: 200 Canceled
     end
@@ -335,4 +355,5 @@ sequenceDiagram
 | `ReservationMarkedNoShow` | No-show job | Inventory release, refund, fee dashboard |
 | `FeeApplied` | Cancellation or no-show fee posted | Fee dashboard (GM) |
 | `RefundFailed` | Stripe refund fails | Held Funds report (US-22) |
+| `CashRefundOwed` / `CashRefundPaid` | Cash refund for an absent guest / paid at the desk | Held Funds report (US-22), folio |
 | `GuestNotifiedAboutFee` | GM sends the fee email | Audit log |

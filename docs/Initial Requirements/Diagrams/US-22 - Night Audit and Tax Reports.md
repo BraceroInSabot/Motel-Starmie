@@ -10,7 +10,8 @@
 | One property at a time; the GM switches; no combined report | `property_id` in every route |
 | Night Audit report content (run status and times, reservations charged, room revenue, taxes per type, total, detail lines, exceptions list) | `NightAuditReport` DTO |
 | Tax Summary content (per tax and rate: taxable amount, tax collected, transactions; monthly breakdown for periods over one month); fines and fees not taxed | `TaxSummaryReport` DTO |
-| Held Funds report (GM only): Checked-Out, Canceled or No-Show reservations with an unreleased hold or a failed refund | `HeldFundsReadModel` |
+| Held Funds report (GM only): Checked-Out, Canceled or No-Show reservations with an unreleased hold, a failed card refund or an owed cash refund | `HeldFundsReadModel` |
+| Cash refund lines have no action; they leave the report when paid at the desk (US-11) | `REFUND.method = CASH`, `status = OWED` |
 | Held Funds columns: code, guest, reservation status, amount, type, since, status, who acted and when | `HeldFundsLine` DTO |
 | "Release now" and "Retry refund" act immediately through Stripe and are audit-logged | `ReleaseHoldNowUseCase`, `RetryRefundUseCase` |
 | Common header, summary totals, sortable and filterable detail table | `ReportHeader`, front-end table |
@@ -111,7 +112,8 @@ classDiagram
         class HeldFundsType {
             <<Enumeration>>
             DEPOSIT_HOLD
-            REFUND
+            CARD_REFUND
+            CASH_REFUND
         }
     }
 
@@ -170,7 +172,7 @@ classDiagram
 - **Permissions (US-01 default matrix):** Night Audit report → `NIGHT_AUDIT_REPORT`; Tax Summary and Held Funds → `FINANCIAL_REPORTS`. Both are GM-only by default; Housekeepers can never receive them.
 - **Night Audit report** reads `NIGHT_AUDIT_RUN`, its `NIGHT_CHARGE` rows and ledger entries, and `NIGHT_AUDIT_EXCEPTION` (US-14) for one business date.
 - **Tax Summary** groups `TAX_*` ledger entries by tax and `rate_applied` for the period (net of voids); the taxable amount is the sum of the `ROOM_NIGHT` amounts (plus the rounded levy for HST, per US-04); the monthly breakdown appears when the period spans more than one month.
-- **Held Funds** lists `DEPOSIT` rows with status `HELD` or `RELEASE_PENDING` on reservations that are `CHECKED_OUT`, `CANCELED` or `NO_SHOW`, plus `REFUND` rows with status `FAILED`. "Since" is the check-out or failure time. "Release now" and "Retry refund" call Stripe immediately; success clears the line, failure updates its status; both write an audit entry.
+- **Held Funds** lists `DEPOSIT` rows with status `HELD` or `RELEASE_PENDING` on reservations that are `CHECKED_OUT`, `CANCELED` or `NO_SHOW`, plus `REFUND` rows with method `CARD` and status `FAILED`, and rows with method `CASH` and status `OWED` (no action button; they disappear when a Front Desk Agent or the GM pays the guest at the desk, US-11). "Since" is the check-out or failure time. "Release now" and "Retry refund" call Stripe immediately; success clears the line, failure updates its status; both write an audit entry.
 - **Guest name** is decrypted for display; anonymized guests (US-21) show a placeholder such as "Anonymized guest".
 - **Exports** use the same DTO: CSV for the table, PDF through the shared HTML templates and WeasyPrint. Exports are excluded from the 1.5 s performance rule (US-10).
 
@@ -224,7 +226,8 @@ erDiagram
     }
     REFUND {
         uuid id PK "US-11"
-        varchar status "FAILED listed"
+        varchar method "CARD or CASH"
+        varchar status "CARD FAILED or CASH OWED listed"
         numeric amount
     }
     RESERVATION {

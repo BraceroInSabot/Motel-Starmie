@@ -32,6 +32,7 @@ As a Front Desk Agent, I want the system to place a deposit hold on the guest's 
 * The deposit is a pre-authorization hold placed through Stripe. Its amount is set for each property by the General Manager in the settings. The default is $250 CAD.
 * Check-in steps, in this order: ID verification (US-12), early check-in approval if before 4:00 PM (US-12), deposit (card hold or cash deposit), room assignment, check-in confirmation. The deposit cannot be taken before the ID is verified.
 * The card hold is placed on the card Stripe kept at booking (see US-06). Guests with no card on file (OTA guests and cash walk-ins) either enter a card in Stripe's secure fields at check-in or leave a cash deposit.
+* A card entered at check-in is also kept by Stripe, in the same way as the card from booking. It is used for the balance at check-out (see US-17) and for fines posted after check-out (see US-16). The Terms & Conditions state this.
 * If the card hold is declined, the agent can try another card or take a cash deposit. The check-in stays blocked until one of them succeeds.
 * For guests without a credit card, a Front Desk Agent registers a cash deposit for the property's deposit amount and enters their own password to confirm it. The cash deposit is recorded in the folio.
 * A failed password confirmation counts towards the US-01 lockout (10 failed attempts), in the same way as a failed login.

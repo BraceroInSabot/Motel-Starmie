@@ -9,6 +9,7 @@
 | Deposit is a Stripe pre-authorization hold; amount per property set by the GM; default $250 CAD | `PROPERTY.deposit_amount`, `PaymentGateway.authorize_hold()` |
 | Order: ID → early approval → deposit → room assignment → confirmation; no deposit before the ID check | `CheckInProcess` guards, flowchart 3.1 |
 | Hold on the card kept at booking; guests without a card enter one in Stripe fields or leave cash | `PlaceDepositUseCase` with `saved` or `new` PaymentMethod |
+| A card entered at check-in is also kept by Stripe, for the check-out balance and late fines | New PaymentMethod attached to the guest's Stripe customer; `RESERVATION.stripe_payment_method_id` updated |
 | Declined hold: try another card or take cash; check-in blocked until one succeeds | `DepositDeclined`, Scenario 2 |
 | Cash deposit for the property's amount, confirmed with the agent's own password, recorded in the folio | `RecordCashDepositUseCase`, `CASH_DEPOSIT_RECEIVED` entry |
 | Failed password confirmation counts toward the US-01 lockout | `StaffUser.register_failed_login()` |
@@ -132,7 +133,7 @@ classDiagram
 
 ### Design notes
 - **Guards (`CheckInProcess`):** the deposit needs a `PASSED` or `OVERRIDDEN` ID verification and, before 4:00 PM, an early check-in approval (US-12); room assignment needs a `HELD` deposit (card or cash); completion needs an assigned room.
-- **Card hold:** a Stripe PaymentIntent with `capture_method = manual` for the property's `deposit_amount`, on the PaymentMethod kept at booking (US-06), or on a new one entered in Stripe fields at check-in (OTA guests, cash walk-ins). A hold is **not** a folio entry; only a capture becomes one (US-16, US-17).
+- **Card hold:** a Stripe PaymentIntent with `capture_method = manual` for the property's `deposit_amount`, on the PaymentMethod kept at booking (US-06), or on a new one entered in Stripe fields at check-in (OTA guests, cash walk-ins). A new card is attached to the guest's Stripe customer (created if needed) with `setup_future_usage = off_session`, and its reference is saved on the reservation, so it can be charged at check-out (US-17) and for fines up to 7 days after check-out (US-16). A hold is **not** a folio entry; only a capture becomes one (US-16, US-17).
 - **Cash deposit:** the agent's password is checked by `PasswordConfirmation`; a wrong password increments the same counter as a failed login and can lock the account (US-01). The deposit posts `CASH_DEPOSIT_RECEIVED` (debit cash, credit cash deposits held, US-15).
 - **Room assignment:** the room must be active, `AVAILABLE`, of the booked room type and at the agent's property; the optimistic lock on `ROOM.version` prevents two agents from taking the same room.
 - **Completion:** in one transaction, the reservation goes `CONFIRMED → IN_HOUSE` (US-11) and the room `AVAILABLE → OCCUPIED` (US-19); after commit, the room state is pushed to the housekeeping board and dashboard (US-18).

@@ -16,7 +16,8 @@
 | Guest emailed (fine name and amount, no photos) in their language | `Notifier.fine_posted()` |
 | Collected at check-out from the hold or cash deposit | US-17 step 1 |
 | Excess charged to the kept card; if declined, check-out blocked until paid at the desk | US-17 steps 2 and 4 |
-| GM can post a fine within 7 days after check-out, charged to the kept card, with an email | `PostLateFineUseCase` |
+| GM can post a fine within 7 days after check-out, charged to the kept card (from booking or from check-in), with an email | `PostLateFineUseCase` |
+| No card kept by Stripe: no fine after check-out | `NoCardOnFile` raised before posting, Scenario 7 |
 
 ---
 
@@ -157,7 +158,7 @@ classDiagram
 - **Report:** the Housekeeper reports from the housekeeping board for a room; the system links the report to the reservation currently In-House in that room. The report appears on the front desk dashboard as an open violation report (US-10).
 - **Review:** only `OPEN` reports can be fined or dismissed. Posting a fine writes a `FINE` entry (debit guest receivable, credit fine revenue, no tax) with `violation_report_id`; the unique constraint makes a second fine impossible even under concurrency. After commit, the guest gets an email with the fine name and amount, without photos.
 - **Collection** is not done at posting time; it happens at check-out (US-17 steps 1 and 2).
-- **Late fine:** the GM picks a fine type for a `CHECKED_OUT` reservation whose check-out was within the last 7 days; the system posts the fine and charges it off-session to the card kept by Stripe, then posts `STRIPE_CARD`, and emails the guest. Cash and OTA guests without a kept card: not described by US-16.
+- **Late fine:** the GM picks a fine type for a `CHECKED_OUT` reservation whose check-out was within the last 7 days; the system posts the fine and charges it off-session to the card kept by Stripe, then posts `STRIPE_CARD`, and emails the guest. The card is the one kept at booking (US-06) or entered at check-in (US-13), i.e., `RESERVATION.stripe_payment_method_id`. If the reservation has no kept card (cash payment and cash deposit), the use case raises `NoCardOnFile` before posting anything, and the API returns `409` (Scenario 7).
 - **Evidence:** files are validated by type and size before storage; the GM can delete them (soft delete of the row, file removed from storage).
 
 ---
@@ -256,7 +257,9 @@ flowchart TD
     E --> F{Charge declined?}
     F -- no --> D
     F -- yes --> G[Check-out blocked until the guest pays at the desk]
-    A -- "after check-out, within 7 days" --> H[GM posts the fine]
+    A -- "after check-out, within 7 days" --> K{Card kept by Stripe?}
+    K -- no --> L[Blocked: no fine after check-out]
+    K -- yes --> H[GM posts the fine]
     H --> I[Charged to the card kept by Stripe and guest emailed]
 ```
 

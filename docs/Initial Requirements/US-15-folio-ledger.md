@@ -36,10 +36,11 @@ As a Front Desk Agent, I want every reservation to have a folio recording all ch
 * Every reservation has exactly one folio.
 * The folio is a double-entry accounting ledger.
 * Charge types: room night, taxes (HST and Marketing Levy), fines (see US-16), cancellation fee and no-show fee (see US-11).
-* Payment types: card through Stripe (at booking), OTA prepaid (see US-07), cash, deposit captured from a card hold (see US-16), cash deposit received and returned (see US-13), and refunds.
+* Payment types: card through Stripe (at booking), OTA prepaid (see US-07), OTA prepaid adjustment (unused nights of an OTA guest who leaves early, see US-17), cash, deposit captured from a card hold (see US-16), cash deposit received and returned (see US-13), and refunds (through Stripe or in cash).
 * Only these charge and payment types can be posted. Staff cannot add other charges by hand.
+* Refunds caused by the reservation lifecycle (cancellation, No-Show, early departure, see US-11 and US-17) are posted by the system or by a Front Desk Agent. They are not corrections.
 * The folio supports split payments: one folio can be paid with several payments and payment methods.
-* Only the General Manager can make corrections:
+* Only the General Manager can make corrections, which fix mistakes outside the normal lifecycle:
    * Void: reverses a charge posted by mistake.
    * Refund: returns money to the guest, through Stripe or in cash.
 * Corrections never edit or delete an entry. They add a reversing entry with a required reason, and record who made the correction and when.

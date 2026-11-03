@@ -14,6 +14,9 @@
 | Clean stay: whole hold released | Step 5 |
 | Stripe unavailable on release: check-out completes, release retried until confirmed | `DEPOSIT.status = RELEASE_PENDING`, `RetryHoldReleasesJob` |
 | Invoice: sequential per property; property, guest, dates, nightly charges, taxes per line, fines, payments, refunds, $0.00; PDF in the guest's language | `IssueInvoiceService`, `INVOICE`, WeasyPrint |
+| Invoice number format `PREFIX-000001`, never restarts; prefix per property set by the GM (defaults BED, TIM) | `InvoiceNumber` value object, `PROPERTY.invoice_prefix` |
+| Invoice shows the company's legal name and GST/HST number, set once by the GM for both properties | `COMPANY_SETTINGS` (single row), Scenario 8 |
+| Early departure refund by the payment method; OTA: no refund, OTA prepaid adjustment instead | Step 3, `RefundService` (US-11), `OTA_PREPAID_ADJUSTMENT`, Scenario 7 |
 | FDA or GM perform check-out; no self check-out | `FRONT_DESK_WORK` permission |
 
 ---
@@ -30,11 +33,23 @@ classDiagram
             +fines_to_collect(folio) Money
             +unused_nights(reservation, today_local) list~date~
         }
+        class InvoiceNumber {
+            <<Value Object>>
+            +str prefix
+            +int sequence
+            +formatted() str
+        }
+        class CompanyDetails {
+            <<Value Object>>
+            +str legal_name
+            +str gst_hst_number
+        }
         class Invoice {
             <<Aggregate Root>>
             +InvoiceId id
             +PropertyId property_id
-            +int number
+            +InvoiceNumber number
+            +CompanyDetails company
             +ReservationId reservation_id
             +Language language
             +datetime issued_at
@@ -115,6 +130,8 @@ classDiagram
     IssueInvoiceService --> PdfRenderer
     IssueInvoiceService --> Notifier
     IssueInvoiceService ..> Invoice
+    Invoice *-- InvoiceNumber
+    Invoice *-- CompanyDetails
     PayAtDeskUseCase --> FolioService
     PayAtDeskUseCase --> PaymentGateway
     RetryHoldReleasesUseCase --> PaymentGateway
@@ -129,11 +146,11 @@ classDiagram
 ### Design notes
 - **Step 1 – fines:** unpaid fines (balance owed, US-16) are captured from the card hold (`DEPOSIT_CAPTURED` entry, up to the hold amount) or deducted from the cash deposit (`CASH` payment from the deposit).
 - **Step 2 – remainder:** any balance still owed is charged off-session to the card kept by Stripe (`STRIPE_CARD`). Guests with no kept card (OTA, cash walk-ins) must pay at the desk first (`PayAtDeskUseCase`, Stripe fields or cash).
-- **Step 3 – early departure:** nights from today to the original check-out date were prepaid but never charged by the Night Audit; their rate and taxes are refunded through Stripe (`REFUND_STRIPE`) and released from inventory (Scenario 5).
+- **Step 3 – early departure:** nights from today to the original check-out date were prepaid but never charged by the Night Audit; they are released from inventory and their rate and taxes are refunded by the payment method (US-11): through Stripe for card payments (`REFUND_STRIPE`, Scenario 5), in cash at the desk for cash payments (`REFUND_CASH`). For OTA bookings there is no refund in the system: an `OTA_PREPAID_ADJUSTMENT` for the unused nights brings the balance to $0.00, and the OTA refunds the guest (Scenario 7).
 - **Step 4 – zero balance:** if the balance is not $0.00 (e.g., the step 2 charge was declined), the use case stops with `OutstandingBalance` and nothing after step 4 runs (Scenario 2).
 - **Step 5 – release:** a captured hold releases its remainder automatically (Scenario 4: capture $250 of $300 → $50 released); an untouched hold is released. If Stripe is unreachable, the deposit is set to `RELEASE_PENDING` and the check-out continues (Scenario 6); `RetryHoldReleasesJob` retries until Stripe confirms. A cash deposit is returned in cash minus fines (`CASH_DEPOSIT_RETURNED`).
 - **Step 6:** reservation `IN_HOUSE → CHECKED_OUT` (US-11), room `OCCUPIED → DIRTY` (US-19), pushed to the housekeeping board (US-18).
-- **Step 7:** the invoice number comes from a per-property sequence (row lock, no gaps); the PDF is rendered with WeasyPrint in the guest's language and emailed after commit.
+- **Step 7:** the invoice number comes from a per-property sequence (row lock, no gaps) and is formatted as `PREFIX-` plus 6 digits, e.g. `BED-000001`; it never restarts. The company's legal name and GST/HST number are copied onto the invoice when it is issued, so a later change in the settings never alters an issued invoice. The PDF is rendered with WeasyPrint in the guest's language and emailed after commit.
 
 ---
 
@@ -142,18 +159,29 @@ classDiagram
 ```mermaid
 erDiagram
     PROPERTY ||--o{ INVOICE : "issues"
+    COMPANY_SETTINGS ||--o{ INVOICE : "details copied to"
     RESERVATION ||--o| INVOICE : "invoiced by"
     RESERVATION ||--o{ DEPOSIT : "secured by"
     RESERVATION ||--|| FOLIO : "has"
 
     PROPERTY {
         uuid id PK "US-02"
-        int next_invoice_number "sequence per property"
+        varchar invoice_prefix UK "BED, TIM, set by the GM"
+        int next_invoice_number "never restarts"
+    }
+    COMPANY_SETTINGS {
+        smallint id PK "single row"
+        varchar legal_name
+        varchar gst_hst_number
+        uuid updated_by FK "GM"
+        timestamptz updated_at
     }
     INVOICE {
         uuid id PK
         uuid property_id FK
-        int number "UK with property_id"
+        varchar number UK "e.g., BED-000001"
+        varchar company_legal_name "copied at issue"
+        varchar company_gst_hst_number "copied at issue"
         uuid reservation_id FK, UK
         char language "EN or FR"
         varchar pdf_file_key
@@ -201,7 +229,11 @@ sequenceDiagram
         UC->>Pay: 2. charge remainder to the kept card
     end
     opt early departure
-        UC->>Refund: 3. refund unused prepaid nights
+        alt OTA booking
+            UC->>Folio: 3. OTA_PREPAID_ADJUSTMENT for unused nights (no refund)
+        else card or cash payment
+            UC->>Refund: 3. refund unused nights (Stripe or cash at the desk)
+        end
     end
     UC->>Folio: 4. balance is 0.00?
     alt balance not zero

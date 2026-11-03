@@ -30,6 +30,14 @@ As a Front Desk Agent, I want to check out a guest only when the folio balance i
    * Given the check-out balance is $0.00
    * When Stripe is unavailable to release the hold
    * Then the check-out completes and the system retries the release automatically until Stripe confirms it
+* Scenario 7: Early departure of an OTA guest
+   * Given an OTA guest leaves 1 night before the planned check-out date
+   * When I check the guest out
+   * Then no refund is made in the system, an OTA prepaid adjustment for the unused night is posted, the balance is $0.00 and the check-out completes
+* Scenario 8: Invoice details
+   * Given the company's legal name and GST/HST number are set in the settings
+   * When the first invoice of Bedford is issued
+   * Then it is numbered BED-000001 and shows the company's legal name and GST/HST number
 
 # Business Rules
 
@@ -38,7 +46,7 @@ As a Front Desk Agent, I want to check out a guest only when the folio balance i
 * When "Check-out" is clicked, the system follows these steps in order:
    1. Capture any unpaid fines from the card hold, or deduct them from the cash deposit (see US-16).
    2. Charge any remaining balance to the card kept by Stripe (see US-06).
-   3. Refund unused prepaid nights if the guest leaves early (see US-11).
+   3. Refund unused prepaid nights if the guest leaves early, by the method the guest used to pay (through Stripe for card payments, in cash at the desk for cash payments, see US-11). For OTA bookings, no refund is made in the system: the system posts an OTA prepaid adjustment for the unused nights, and the OTA handles the guest's refund.
    4. Check that the folio balance is $0.00.
    5. Release whatever is left of the card hold, or return the rest of the cash deposit in cash (see US-13).
    6. Change the reservation to Checked-Out and the room to Dirty.
@@ -49,7 +57,8 @@ As a Front Desk Agent, I want to check out a guest only when the folio balance i
 * On a clean stay, the whole deposit hold is released through Stripe.
 * If Stripe is unavailable when releasing the hold, the check-out still completes and the release is retried automatically until Stripe confirms it.
 * The final invoice:
-   * Is numbered sequentially for each property.
+   * Is numbered sequentially for each property, in the format "property prefix-6-digit number" (e.g., BED-000001 for Bedford, TIM-000001 for Timberlea). The sequence never restarts. The General Manager sets each property's prefix in the settings; the defaults are BED and TIM.
+   * Shows the company's legal name and GST/HST registration number. The General Manager sets them once in the settings, and they apply to both properties.
    * Contains the property details, the guest's name, the stay dates, each nightly charge, each tax on its own line, fines, payments, refunds and the final $0.00 balance.
    * Is emailed as a PDF in the guest's chosen language.
 * Front Desk Agents and the General Manager can check guests out. Guest self check-out is out of scope for V1.

@@ -30,6 +30,14 @@ As a motel staff member, I want to log into the Starmie PMS with my credentials,
    * Given I logged in 12 hours ago
    * When I perform any action
    * Then the system ends my session and asks me to log in again
+* Scenario 7: Forgotten password
+   * Given I forgot my password
+   * When I request a password reset with my email address
+   * Then the system emails me a single-use reset link valid for 1 hour, and shows the same confirmation message whether or not the email address is registered
+* Scenario 8: Password reset by the General Manager
+   * Given a staff member cannot log in
+   * When the General Manager resets their password
+   * Then the system issues a new temporary password, which must be changed at the next login
 
 # Business Rules
 
@@ -41,8 +49,11 @@ As a motel staff member, I want to log into the Starmie PMS with my credentials,
 * Passwords must have at least 12 characters, with no other composition rules. Common and leaked passwords are rejected.
 * After 10 consecutive failed login attempts, the account is locked for 15 minutes. The General Manager can unlock it earlier. A successful login resets the counter.
 * A session expires 12 hours after login, regardless of activity.
-* The General Manager creates, edits and deactivates staff accounts. A new account receives a temporary password, which must be changed at the first login.
-* Inactive staff members cannot log in.
+* The General Manager creates, edits and deactivates staff accounts. A new account receives a temporary password, which must be changed at the first login. Each account has an interface language (see US-24).
+* The first General Manager account is created by the system's seed data at installation, from the configuration (environment variables). It receives a temporary password, which must be changed at the first login.
+* Any staff member who forgot their password can request a reset link by email. The link can be used only once and expires 1 hour after it is sent. The new password follows the same password rules.
+* The General Manager can also reset a staff member's password, which issues a new temporary password that must be changed at the next login.
+* Inactive staff members cannot log in or request a password reset.
 * Each staff member works at one property. The General Manager has access to all properties.
 * Each role has a permission matrix, which the General Manager can modify. The default matrix is:
 
@@ -55,7 +66,7 @@ As a motel staff member, I want to log into the Starmie PMS with my credentials,
 | Night Audit report | No | Yes | No |
 | Tax Summary report, Held Funds report, fee dashboard and occupancy report | No | Yes | No |
 | Age-policy override at check-in | No | Yes | No |
-| Settings: properties, rooms, deposit, fines, no-show and fee policy, OTA mapping, staff accounts and permissions | No | Yes | No |
+| Settings: company details (legal name and GST/HST number), properties, rooms, deposit, fines, no-show and fee policy, OTA mapping, staff accounts and permissions | No | Yes | No |
 
 * Housekeepers can never receive access to financial data, even through the permission matrix.
 * The General Manager cannot remove their own access to settings and permissions.

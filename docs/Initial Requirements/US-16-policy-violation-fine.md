@@ -30,6 +30,10 @@ As a Front Desk Agent, I want to add a fine to the folio when housekeeping repor
    * Given a guest checked out less than 7 days ago
    * When the General Manager posts a fine for that stay
    * Then the system charges it to the card kept by Stripe and emails the guest a notice
+* Scenario 7: Violation found after check-out, no card kept
+   * Given a guest who paid in cash and left a cash deposit checked out less than 7 days ago
+   * When the General Manager tries to post a fine for that stay
+   * Then the system blocks it and informs the General Manager that the guest has no card kept by Stripe
 
 # Business Rules
 
@@ -44,7 +48,8 @@ As a Front Desk Agent, I want to add a fine to the folio when housekeeping repor
 * When a fine is posted, the guest receives an email in their language with the fine name and amount. The email does not include the photos.
 * Fines are collected at check-out: the unpaid balance is captured from the pre-authorized hold, or deducted from the cash deposit (see US-13).
 * If the unpaid balance is larger than the hold or the cash deposit, the whole hold or deposit is used, and the rest is charged automatically to the card kept by Stripe (see US-06). If that charge is declined, the balance stays open and the check-out is blocked (see US-17) until the guest pays at the desk by card or in cash.
-* After check-out, the General Manager can still post a fine for a stay within 7 days of the check-out. It is charged to the card kept by Stripe, and the guest receives an email notice.
+* After check-out, the General Manager can still post a fine for a stay within 7 days of the check-out. It is charged to the card kept by Stripe (the card from booking, see US-06, or the card entered at check-in, see US-13), and the guest receives an email notice.
+* Guests with no card kept by Stripe (e.g., they paid in cash and left a cash deposit) cannot receive a fine after check-out.
 
 # Definition of Done (DoD)
 

@@ -30,6 +30,14 @@ As a Front Desk Agent, I want reservations to follow a controlled lifecycle, So 
    * Given a reservation is In-House
    * When someone tries to cancel it
    * Then the system blocks the change and the guest must be checked out instead (see US-17)
+* Scenario 7: Cash-paid reservation canceled at the desk
+   * Given a walk-in guest paid the stay in cash and the reservation is canceled at the guest's request while the guest is at the desk
+   * When I confirm the cancellation
+   * Then the system shows the amount to return (the amount paid minus the applicable fee), I hand it to the guest in cash, and the system records the cash refund in the folio
+* Scenario 8: Cash refund owed to an absent guest
+   * Given a reservation paid in cash becomes No-Show
+   * When the no-show is processed
+   * Then the cash refund (the amount paid minus the no-show fee) stays owed and appears in the Held Funds report (see US-22) until the guest collects it at the desk
 
 # Business Rules
 
@@ -52,7 +60,10 @@ As a Front Desk Agent, I want reservations to follow a controlled lifecycle, So 
 * The default grace period is 60 minutes, which gives a no-show deadline of 1:00 AM. The General Manager can change it for each property.
 * Cancellation and no-show fees are optional fixed amounts in CAD, configured for each property by the General Manager.
 * The cancellation fee applies only when the guest cancels less than X hours before check-in (4:00 PM on the arrival day). The General Manager sets X for each property; 0 means the fee always applies.
-* When a reservation is canceled or becomes No-Show, the amount paid is refunded automatically through Stripe, minus the applicable fee.
+* When a reservation is canceled or becomes No-Show, the amount paid is refunded minus the applicable fee, by the method the guest used to pay:
+   * Card: refunded automatically through Stripe.
+   * Cash: refunded in cash at the desk by a Front Desk Agent or the General Manager, and recorded in the folio as a cash refund. If the guest is not at the desk (e.g., a No-Show), the cash refund stays owed and is shown in the Held Funds report (see US-22). When the guest comes to the desk, a Front Desk Agent or the General Manager pays it from the reservation, and the system records it in the folio.
+* These lifecycle refunds are not corrections, so Front Desk Agents can perform them (corrections are General Manager only, see US-15).
 * OTA bookings can become No-Show, but no refund or fee is processed in the system, because the OTA handles the payment (see US-07).
 * Canceled and No-Show reservations release their nights, so the room can be sold again.
 * Every status change is recorded with who made it (guest, staff member or system) and when.
