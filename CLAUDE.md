@@ -1,12 +1,15 @@
 # CLAUDE.md — Starmie Motel PMS
 
 > **Sources of truth (in this repository), in order of precedence:**
-> 1. User stories: `docs/Initial Requirements/US-01` to `US-23` (functional requirements and business rules).
+> 1. User stories: `docs/Initial Requirements/US-01` to `US-24` (functional requirements and business rules).
 > 2. Diagrams: `docs/Initial Requirements/Diagrams/` (class, ER and event-flow diagrams per user story).
-> 3. Business summary: `docs/Business Modeling/Business Modeling.md`.
-> 4. Technology: `docs/Tech Stack/Tools.md`.
+> 3. Business summary: `docs/Business Modeling/Business Modeling.md` (and the draft `Default Terms and Conditions.md`).
+> 4. Technical conventions: `docs/Tech Spec/Techinal Specs.md` (API format, authentication, project layout, environment variables, seeds, email, Stripe, storage, i18n, code quality, Definition of Done).
+> 5. Technology: `docs/Tech Stack/Tools.md`.
 >
-> If two sources differ, the higher one wins. Report the difference to the project owner instead of choosing silently.
+> If two sources differ, the higher one wins, except for technical conventions, where the Tech Spec wins over the diagrams' implementation details. Report the difference to the project owner instead of choosing silently.
+>
+> **How to load context:** read this file and the Tech Spec, then only the user story you are implementing, its diagram file and the stories it references (e.g., "see US-11"). Do not load all stories and diagrams at once.
 >
 > Reference business (inspiration only): stardustmotel.ca, a family-run motel in Halifax, Nova Scotia. Never copy its name, branding or content, and never turn its practices into business rules unless the project owner confirms them.
 
@@ -44,7 +47,7 @@ Rules: ORM models are not domain entities; external services are injected behind
 
 - Unit tests for the domain and use cases (no database; fakes for ports); integration tests for repositories, REST endpoints, the OTA webhook and WebSockets.
 - Dedicated tests for: both state machines, tax calculation and rounding, folio balance, idempotency, optimistic locking, timezone and DST behavior, the permission matrix, and every scenario in the user stories.
-- New code is not done without tests. Definition of Done of every story: code reviewed via Pull Request, test coverage implemented, documentation and wiki updated.
+- New code is not done without tests. Definition of Done of every story: code reviewed via Pull Request, test coverage implemented, documentation and wiki updated. Minimum coverage: 95% backend domain/application, 85% backend overall, 75% front end; what each DoD item means in practice is defined in the Tech Spec, section 5.
 
 ---
 
@@ -71,9 +74,10 @@ The project changes phase only when the project owner asks. Use only V1 tools un
 | General Manager / Owner | Everything above + settings, staff accounts, permission matrix, age override, voids and refunds, all reports. All properties. |
 | Housekeeper | Housekeeping board, cleaning, stayover requests, violation reports. Never financial data. One property. |
 
+- Each staff member uses the staff screens in English or French, saved on their account, default English (US-24).
 - **Head Housekeeper** is a privilege the GM grants to a Housekeeper (verify cleaning, move rooms to Unavailable/Maintenance).
 - **Night Audit** (US-14) and the **no-show check** (US-11) are automated processes, not roles.
-- Login by unique, case-insensitive email; passwords ≥ 12 characters (common/leaked rejected); 10 failures → 15-minute lockout; sessions last 12 hours; temporary password changed at first login. Default permission matrix in US-01, editable by the GM.
+- Login by unique, case-insensitive email; passwords ≥ 12 characters (common/leaked rejected); 10 failures → 15-minute lockout; sessions last 12 hours; temporary password changed at first login; password reset by a single-use 1-hour email link or by the GM; the first GM is created by the seed data. Default permission matrix in US-01, editable by the GM.
 
 ### 4.2 Reservation lifecycle (US-06, US-07, US-09, US-11)
 - States: `Unconfirmed`, `Confirmed`, `In-House`, `Checked-Out`, `Canceled`, `No-Show`. Transition table in US-11.
@@ -81,17 +85,19 @@ The project changes phase only when the project owner asks. Use only V1 tools un
 - The **full stay is charged at booking** through Stripe (walk-ins can pay cash); OTA bookings are recorded as "OTA prepaid".
 - Stays of 1 to 5 nights, booked from the same day up to 365 days ahead. Check-in from 4:00 PM, check-out by 11:00 AM.
 - Cancellation via a secure link (guest) or by staff ("guest's request" or "motel's decision"). In-House cannot be canceled; early departure = check-out with unused nights refunded.
-- No-show deadline: midnight ending the arrival day + grace period (default 60 min). Optional fixed cancellation and no-show fees per property; refunds are automatic minus the fee.
+- No-show deadline: midnight ending the arrival day + grace period (default 60 min). Optional fixed cancellation and no-show fees per property. Refunds minus the fee go back by the payment method: card through Stripe automatically; cash at the desk (owed in the Held Funds report if the guest is absent). OTA bookings: no refund or fee in the system.
 
 ### 4.3 Check-in, stay and check-out (US-12, US-13, US-14, US-16, US-17)
-- Check-in order: ID check (21+, GM override with justification) → early check-in approval if before 4 PM → deposit (Stripe hold, default $250 per property, or cash deposit confirmed with the agent's password) → assign an Available room of the booked type → In-House / Occupied.
+- Check-in order: ID check (21+, GM override with justification; without an override the reservation is canceled at the guest's request and fees apply) → early check-in approval if before 4 PM → deposit (Stripe hold, default $250 per property, or cash deposit confirmed with the agent's password) → assign an Available room of the booked type → In-House / Occupied.
 - Night Audit at 2:00 AM local time per property posts each night's rate and taxes once; failures go to an exceptions list; retries every 15 min ×3, then emails the developer.
 - Fines: catalog per property (Cannabis $250 default), reported by Housekeepers with 1–5 photos, posted or dismissed by the Front Desk Agent; not taxed.
-- Check-out (7 steps): capture fines → charge remainder to the card → refund unused nights → balance $0 → release rest of hold / return cash → Checked-Out + room Dirty → email invoice (PDF, sequential per property).
+- A card entered at check-in is kept by Stripe like the booking card; late fines (within 7 days) go to the kept card, and guests with no kept card cannot be fined after check-out.
+- Check-out (7 steps): capture fines → charge remainder to the card → refund unused nights (Stripe or cash; OTA: prepaid adjustment, no refund) → balance $0 → release rest of hold / return cash → Checked-Out + room Dirty → email invoice (PDF, `BED-000001` / `TIM-000001`, company legal name and GST/HST number).
 
 ### 4.4 Money and taxes (US-04, US-15)
 - HST 14% (NS, from 2025-04-01) and Halifax Marketing Levy 3%, editable by the GM with effective dates. Levy on the rate; HST on rate + rounded levy; per-line rounding, half up. Only room nights are taxed.
-- One double-entry folio per reservation; fixed charge and payment types; corrections only by the GM as reversing entries.
+- One double-entry folio per reservation; fixed charge and payment types (including the OTA prepaid adjustment for OTA guests who leave early); corrections (voids, refunds outside the lifecycle) only by the GM as reversing entries. Lifecycle refunds (cancellation, No-Show, early departure) are not corrections and can be done by a Front Desk Agent.
+- Company legal name and GST/HST number are set once by the GM and shown on every invoice.
 
 ### 4.5 Rooms and housekeeping (US-02, US-18, US-19)
 - Room states: `Available`, `Occupied`, `Dirty`, `Cleaning`, `Unavailable`, `Maintenance`. Transition table in US-19.
@@ -106,7 +112,7 @@ The project changes phase only when the project owner asks. Use only V1 tools un
 - Two mock channels; HMAC-signed webhook; idempotency by OTA Booking ID; new bookings only; inbound mapping only (no inventory distribution).
 
 ### 4.8 Reports (US-10, US-22, US-23)
-- Per property, GM only (except the dashboard): Night Audit, Tax Summary, Held Funds, Occupancy (occupancy %, ADR, RevPAR), fee dashboard. PDF (WeasyPrint) and CSV.
+- Per property, GM only (except the dashboard): Night Audit, Tax Summary, Held Funds (unreleased holds, failed card refunds, cash refunds owed), Occupancy (occupancy %, ADR, RevPAR), fee dashboard. PDF (WeasyPrint) and CSV, in the exporting staff member's language.
 
 ### 4.9 Architectural constraints (non-negotiable)
 - **Money:** never `float`; `Decimal` with currency.
@@ -120,16 +126,30 @@ The project changes phase only when the project owner asks. Use only V1 tools un
 
 ## 5. Open points — ask before implementing
 
-- **Not covered by any user story yet:** staff interface language (EN/FR) and Group, Corporate & Extended-Stay requests with the corporate discount (Business Modeling, section 9). Do not implement them until stories exist.
+- **Not covered by any user story yet:** Group, Corporate & Extended-Stay requests with the corporate discount (Business Modeling, section 9). Do not implement them until a story exists.
+- **Still open (Tech Spec, section 7):** email sender domain, the French reviewer, the leaked-password source for US-01, legal review of the Terms & Conditions.
 - Out of scope for V1 (do not implement): OTA inventory distribution, OTA modifications/cancellations, guest self check-out, guest self-edit of profiles, marketing emails, dynamic pricing, combined multi-property reports.
 - Any rule not written in a user story: ask.
 
 ---
 
-## 6. Checklist before delivering any code
+## 6. Build order
+
+Implement the stories in this order, because each group depends on the previous ones:
+
+1. US-01, US-24, US-02, US-04 — staff access and language, properties and rooms, taxes
+2. US-03, US-20, US-05, US-06 — search, guest profile, Terms & Conditions, direct booking
+3. US-15, US-11, US-09, US-07, US-08 — folio, lifecycle and refunds, walk-ins, OTA
+4. US-12, US-13, US-19, US-14 — check-in, deposit, room states, Night Audit
+5. US-16, US-17, US-18, US-10 — fines, check-out and invoice, housekeeping board, dashboard
+6. US-21, US-22, US-23 — Forget Me and reports
+
+---
+
+## 7. Checklist before delivering any code
 
 - [ ] SOLID, Clean Code, Clean Architecture and REST respected?
-- [ ] Only V1 technologies used?
+- [ ] Only V1 technologies used, following the Tech Spec conventions?
 - [ ] Every business rule traced to a user story (US-XX)?
 - [ ] Money as `Decimal` with currency, timestamps in UTC, idempotency and locking where required?
 - [ ] Tests cover the domain, the use cases and every acceptance scenario?
