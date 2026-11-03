@@ -1,6 +1,6 @@
 # Starmie Motel PMS: Development Guide
 
-> **Source of truth:** the user stories in `docs/Initial Requirements/` (US-01 to US-23). This document summarizes them. If anything here differs from a user story, the user story wins.
+> **Source of truth:** the user stories in `docs/Initial Requirements/` (US-01 to US-24). This document summarizes them. If anything here differs from a user story, the user story wins.
 
 **System Description:** A cloud-native Property Management System (PMS) for high-turnover Canadian motels operating **two properties** in Nova Scotia: **Bedford** and **Timberlea**. The system handles online, walk-in, phone and (mocked) OTA bookings, front-desk operations, a double-entry folio ledger with Canadian taxes (HST and the Halifax Marketing Levy), housekeeping workflows, and financial and occupancy reports, while enforcing strict property policies. Guest-facing content is available in **English and French**. Payments go through **Stripe**.
 
@@ -25,7 +25,9 @@
 ### Authentication and permissions (US-01)
 * Login with a unique, case-insensitive **email address**. Passwords: at least 12 characters, common and leaked passwords rejected.
 * **10 consecutive failed attempts** lock the account for **15 minutes** (the General Manager can unlock it earlier). Sessions expire **12 hours** after login.
-* The General Manager creates staff accounts with a temporary password that must be changed at the first login.
+* The General Manager creates staff accounts with a temporary password that must be changed at the first login. The first General Manager account is created by the system's seed data at installation.
+* Forgotten passwords: a single-use email reset link valid for 1 hour, or a new temporary password issued by the General Manager.
+* Each staff member uses the staff screens in **English or French**, saved on their account (default English, US-24).
 * Each role has a permission matrix that the General Manager can modify (default matrix in US-01). Housekeepers can **never** receive financial access, and the General Manager cannot remove their own access to settings and permissions.
 
 ---
@@ -92,7 +94,7 @@
 ### Phase 2: Check-in (US-12, US-13)
 1. **ID verification:** only the registering guest shows a driver's licence, passport or provincial/territorial photo ID. Under 21: blocked unless the **General Manager** approves an override (required justification, audit record) from their own login. No ID data is stored.
 2. **Early check-in:** check-in starts at 4:00 PM. Before that, a Front Desk Agent can approve it (no fee) if an Available room of the booked type exists.
-3. **Deposit:** a Stripe hold for the property's deposit amount (default **$250 CAD**) on the card kept since booking, or on a card entered at check-in, or a **cash deposit** confirmed with the agent's password.
+3. **Deposit:** a Stripe hold for the property's deposit amount (default **$250 CAD**) on the card kept since booking, or on a card entered at check-in (which Stripe then keeps as well), or a **cash deposit** confirmed with the agent's password.
 4. **Room assignment:** the agent chooses an Available room of the booked room type.
 5. The reservation becomes **In-House** and the room **Occupied**.
 
@@ -105,19 +107,19 @@
 When "Check-out" is clicked:
 1. Capture unpaid fines from the card hold, or deduct them from the cash deposit.
 2. Charge any remaining balance to the card kept by Stripe.
-3. Refund unused prepaid nights if the guest leaves early.
+3. Refund unused prepaid nights if the guest leaves early, by the payment method (Stripe or cash). OTA bookings get no refund in the system: an OTA prepaid adjustment brings the balance to zero.
 4. Check that the folio balance is **$0.00** (otherwise the guest pays at the desk; check-out stays blocked).
 5. Release the rest of the card hold, or return the rest of the cash deposit.
 6. Reservation → Checked-Out, room → Dirty.
-7. Email the final invoice (PDF, sequential number per property, guest's language).
+7. Email the final invoice (PDF in the guest's language, numbered per property as `BED-000001` / `TIM-000001`, with the company's legal name and GST/HST number).
 
-A guest still In-House after 11:00 AM is flagged as a late check-out (no fee). Within **7 days** after check-out, the General Manager can still post a fine, charged to the card kept by Stripe.
+A guest still In-House after 11:00 AM is flagged as a late check-out (no fee). Within **7 days** after check-out, the General Manager can still post a fine, charged to the card kept by Stripe (from booking or check-in). Guests with no card kept by Stripe cannot be fined after check-out.
 
 ### Phase 5: Cancellation and No-Show (US-11)
 * Guests cancel through the secure link in their emails. Staff cancellations are marked as the guest's request (fee rules apply) or the motel's decision (no fee).
 * The cancellation fee (optional fixed amount per property) applies only within **X hours** before check-in (X set per property; 0 = always).
 * **No-Show deadline:** midnight at the end of the arrival day + the property's grace period (default 60 minutes, i.e., 1:00 AM).
-* Refunds are automatic through Stripe, minus the applicable fee. OTA bookings get no refund or fee in the system.
+* Refunds are made minus the applicable fee, by the method the guest used to pay: card payments through Stripe automatically; cash payments in cash at the desk (if the guest is absent, the cash refund stays owed in the Held Funds report). OTA bookings get no refund or fee in the system.
 
 ---
 
@@ -127,7 +129,7 @@ A guest still In-House after 11:00 AM is flagged as a late check-out (no fee). W
 * The levy is calculated on the room rate; HST is calculated on the room rate **plus** the rounded levy. Example: $100.00 → levy $3.00 + HST $14.42 = **$117.42**.
 * Each tax is calculated per line and rounded to the cent, with halves rounded up. The rate is the one in force on the local date of the night.
 * **Only room nights are taxed.** Fines, cancellation fees and no-show fees are not taxed.
-* **Charge types:** room night, taxes, fines, cancellation fee, no-show fee. **Payment types:** Stripe card, OTA prepaid, cash, deposit captured from a hold, cash deposit received and returned, refunds. No other charges can be posted.
+* **Charge types:** room night, taxes, fines, cancellation fee, no-show fee. **Payment types:** Stripe card, OTA prepaid, OTA prepaid adjustment, cash, deposit captured from a hold, cash deposit received and returned, refunds (Stripe or cash). No other charges can be posted.
 * Split payments are allowed. Only the General Manager can void a charge or issue a refund; corrections add a reversing entry with a reason and never edit or delete.
 
 ---
@@ -155,6 +157,7 @@ A guest still In-House after 11:00 AM is flagged as a late check-out (no fee). W
 * Room types, rooms, inventory, reservations, folios, Night Audit runs, Terms & Conditions, deposit amount, fines, no-show grace period and fees are all **per property**.
 * Staff work at one property; the General Manager accesses all properties.
 * Guest profiles are **shared** by both properties.
+* The company's legal name and GST/HST registration number are set once and apply to both properties' invoices; each property has its own invoice prefix (BED, TIM).
 * Each property is a separate listing on each OTA channel.
 * Reports are generated **per property**; there is no combined report in V1.
 
@@ -166,7 +169,7 @@ All reports: header (property, report name, date or period, generated at and by)
 
 * **Night Audit report:** run status and times, reservations charged, room revenue, taxes per type, total posted, a line per reservation and an exceptions list.
 * **Tax Summary report:** one line per tax (HST, Marketing Levy) and rate, with taxable amount, tax collected, number of transactions and a monthly breakdown.
-* **Held Funds report:** finished stays with a deposit hold not yet released or a failed refund, with "Release now" and "Retry refund" actions (audit logged).
+* **Held Funds report:** finished stays with a deposit hold not yet released, a failed card refund or a cash refund owed to an absent guest, with "Release now" and "Retry refund" actions (audit logged).
 * **Occupancy report:** occupancy % = occupied room-nights ÷ available room-nights × 100, plus **ADR** and **RevPAR**, with daily and room-type breakdowns.
 * **Fee dashboard** (US-11): fees applied, with an option to email the guest.
 
@@ -185,9 +188,6 @@ All reports: header (property, report name, date or period, generated at and by)
 ## 9. Not Yet Covered by a User Story
 
 These items come from earlier versions of this document. They have no user story yet, so they must not be implemented until one is written.
-
-### Staff interface language
-* The system supports only English (EN) and French (FR). The guest-facing experience is covered by the user stories; the staff interface language still needs a user story.
 
 ### Group, Corporate & Extended-Stay Requests
 * Stays requested through a public form (name, email, phone, property, request type: Group Booking, Extended Stay or Corporate Accommodation, message) and handled by staff.
