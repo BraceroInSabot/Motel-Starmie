@@ -1,6 +1,6 @@
 # Languages, Frameworks and Tools used
 
-> The user stories in `docs/Initial Requirements/` (US-01 to US-23) are the source of truth for what each tool must do. The "Used for" column points to the stories that need each tool.
+> The user stories in `docs/Initial Requirements/` (US-01 to US-24) are the source of truth for what each tool must do. The "Used for" column points to the stories that need each tool.
 
 ## Front-End
 
@@ -19,7 +19,7 @@
 | Python | Application code |
 | Django | REST API, authentication and permissions (US-01), admin settings |
 | Django Channels | WebSockets for the real-time housekeeping board and room states on the front desk dashboard (US-10, US-18) |
-| RabbitMQ | Channel layer for Django Channels and asynchronous work (emails, Stripe retries) |
+| RabbitMQ | Channel layer for Django Channels (V1). Background work in V1 runs from cron through database tables (see `docs/Tech Spec/Techinal Specs.md`, section 2.3) |
 | cron | Timezone-aware scheduled jobs: Night Audit at 2:00 AM local time (US-14), no-show check every 15 minutes (US-11), deposit release retries (US-17) |
 | Stripe API | Charges at booking, refunds, deposit holds (authorize, capture, release), saved cards, customer deletion on "Forget Me" (US-06, US-11, US-13, US-17, US-21) |
 | WeasyPrint | PDF generation from HTML templates: invoice and reports (US-17, US-22, US-23) |
