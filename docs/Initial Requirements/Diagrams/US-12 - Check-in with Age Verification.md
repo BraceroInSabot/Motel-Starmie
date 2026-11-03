@@ -1,8 +1,21 @@
 # US-12 — Check-in with Age Verification: Diagrams
 
-> Sources: `US-12-check-in-with-age-verification.md`, `US-01-staff-authentication-and-role-based-access.md`, `docs/Business Modeling/Business Modeling.md` (Phase 2, Section 4), `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
-> Data is scoped per **Property** (Business Modeling, Section 5) even where the story text does not mention it.
+> Source: `US-12-check-in-with-age-verification.md`. Related: US-01 (GM-only override), US-11 (cancellation at the guest's request), US-13 (rest of the check-in).
+
+## Business rules reflected
+
+| Rule (US-12) | Where it appears |
+|---|---|
+| Check-in from 4:00 PM local time | `CheckInWindow` |
+| Only the registering guest shows ID | One `IdVerification` per reservation |
+| Accepted IDs: driver's licence, passport, provincial/territorial photo ID | `IdType` |
+| Age from the date of birth against the local check-in date | `AgePolicy.age_on(dob, local_date)` |
+| Under 21 blocked unless the GM overrides (US-01) | `AgePolicy.MIN_AGE = 21`, `AGE_OVERRIDE` permission |
+| GM approves from their own login, on any device; the agent's screen updates | `ApproveAgeOverrideUseCase`, WebSocket push |
+| Justification required (non-empty); audit stores it, who and when | `AgeOverride`, `AUDIT_LOG` |
+| No override: cancel at the guest's request, fee rules apply | `CancelReservationUseCase(GUEST_REQUEST)` (US-11) |
+| Early check-in approved by an FDA, no fee, while the desk is open and an Available room of the type exists | `ApproveEarlyCheckInUseCase` |
+| No ID data stored; only result, ID type and verifying agent | `ID_VERIFICATION` columns (no date of birth, no number) |
 
 ---
 
@@ -13,276 +26,214 @@ classDiagram
     direction LR
 
     namespace Domain {
-        class IdVerification {
-            <<Entity / Aggregate Root>>
-            -IdVerificationId id
-            -ReservationId reservation_id
-            -IdVerificationResult result
-            -StaffMemberId verified_by
-            -datetime verified_at_utc
-            -AgeOverride | None override
-            +verify(reservation_id, date_of_birth, on_date, by)$ IdVerification
-            +apply_override(override: AgeOverride) None
-            +allows_check_in() bool
-        }
-        class IdVerificationResult {
+        class IdType {
             <<Enumeration>>
-            ELIGIBLE
-            UNDERAGE
+            DRIVERS_LICENCE
+            PASSPORT
+            PROVINCIAL_PHOTO_ID
+        }
+        class VerificationResult {
+            <<Enumeration>>
+            PASSED
+            UNDER_AGE
+            OVERRIDDEN
         }
         class AgePolicy {
             <<Domain Service>>
-            +MINIMUM_AGE = 21
-            +age_on(date_of_birth: date, on_date: date) int
-            +evaluate(date_of_birth: date, on_date: date) IdVerificationResult
+            +MIN_AGE = 21
+            +age_on(date_of_birth, local_date) int
+        }
+        class CheckInWindow {
+            <<Value Object>>
+            +CHECK_IN_FROM = 16:00
+            +is_early(now_local) bool
+        }
+        class IdVerification {
+            <<Entity>>
+            +ReservationId reservation_id
+            +IdType id_type
+            +VerificationResult result
+            +StaffId verified_by
+            +datetime verified_at
         }
         class AgeOverride {
+            <<Entity>>
+            +ReservationId reservation_id
+            +StaffId approved_by
+            +str justification
+            +datetime approved_at
+        }
+        class EarlyCheckInApproval {
             <<Value Object>>
-            +StaffMemberId approved_by
-            +datetime approved_at_utc
-            +str | None justification
-        }
-        class CheckInWindowPolicy {
-            <<Domain Service>>
-            +CHECK_IN_FROM = 16:00 local
-            +ensure_check_in_allowed(property: Property, at_utc: datetime) None
-        }
-        class GuestIdVerified {
-            <<Domain Event>>
-            +ReservationId reservation_id
-            +IdVerificationResult result
-            +datetime occurred_at_utc
-        }
-        class AgePolicyOverridden {
-            <<Domain Event>>
-            +ReservationId reservation_id
-            +StaffMemberId approved_by
-            +datetime occurred_at_utc
-        }
-        class UnderageGuestError {
-            <<Domain Exception>>
-        }
-        class CheckInTooEarlyError {
-            <<Domain Exception>>
-        }
-        class OverrideNotAllowedError {
-            <<Domain Exception>>
+            +StaffId approved_by
+            +datetime approved_at
         }
     }
 
     namespace Application {
         class VerifyGuestIdUseCase {
-            <<Use Case>>
-            +execute(command: VerifyGuestIdCommand) IdVerificationView
+            +execute(reservation_id, id_type, date_of_birth, agent) VerificationResult
         }
-        class OverrideAgePolicyUseCase {
-            <<Use Case>>
-            +execute(command: OverrideAgePolicyCommand) IdVerificationView
+        class ApproveAgeOverrideUseCase {
+            <<AGE_OVERRIDE · GM>>
+            +execute(reservation_id, justification, gm) None
         }
-        class VerifyGuestIdCommand {
-            <<DTO>>
-            +UUID reservation_id
-            +date date_of_birth
-            +UUID staff_member_id
+        class ApproveEarlyCheckInUseCase {
+            +execute(reservation_id, agent) None
         }
-        class OverrideAgePolicyCommand {
-            <<DTO>>
-            +UUID reservation_id
-            +UUID manager_staff_member_id
-            +str | None justification
+        class CancelReservationUseCase {
+            <<US-11>>
         }
-        class IdVerificationRepository {
+        class RoomAvailabilityReader {
             <<Port>>
-            +add(verification: IdVerification) None
-            +get_by_reservation(reservation_id: ReservationId) IdVerification
-            +save(verification: IdVerification) None
+            +has_available_room(room_type_id) bool
         }
-        class ReservationRepository {
-            <<Port · US-06>>
-            +get_by_id(reservation_id: ReservationId) Reservation
+        class RealtimePublisher {
+            <<Port>>
+            +publish(channel, event) None
         }
-        class PropertyRepository {
-            <<Port · Property Registry diagram>>
-            +get_by_id(property_id: PropertyId) Property
-        }
-        class AuthorizeStaffActionUseCase {
-            <<Use Case · US-01>>
-            +execute(staff_member_id, permission) None
+        class AuditLog {
+            <<Port>>
         }
         class Clock {
             <<Port>>
-            +now_utc() datetime
         }
-        class EventPublisher {
-            <<Port>>
-            +publish(event: DomainEvent) None
+    }
+
+    namespace Infrastructure {
+        class ChannelsRealtimePublisher {
+            <<Django Channels · RabbitMQ>>
         }
     }
 
     namespace Interface {
-        class IdVerificationView {
-            <<REST Controller>>
-            +post(request, reservation_id) Response
+        class CheckInViews {
+            <<REST · FRONT_DESK_WORK>>
+            POST /api/v1/reservations/id/id-verification
+            POST /api/v1/reservations/id/early-check-in
         }
         class AgeOverrideView {
-            <<REST Controller>>
-            +post(request, reservation_id) Response
+            <<REST · AGE_OVERRIDE>>
+            POST /api/v1/reservations/id/age-override
+        }
+        class CheckInConsumer {
+            <<WebSocket>>
+            ws /ws/reservations/id/check-in
         }
     }
 
-    IdVerification --> IdVerificationResult
-    IdVerification *-- AgeOverride
-    IdVerification ..> AgePolicy : uses
-    IdVerification ..> GuestIdVerified : records
-    IdVerification ..> AgePolicyOverridden : records
-    AgePolicy ..> UnderageGuestError : signals
-    CheckInWindowPolicy ..> CheckInTooEarlyError : raises
-
-    VerifyGuestIdUseCase ..> VerifyGuestIdCommand
-    VerifyGuestIdUseCase --> ReservationRepository
-    VerifyGuestIdUseCase --> PropertyRepository
-    VerifyGuestIdUseCase --> CheckInWindowPolicy
-    VerifyGuestIdUseCase --> IdVerificationRepository
+    IdVerification --> IdType
+    IdVerification --> VerificationResult
+    VerifyGuestIdUseCase --> AgePolicy
     VerifyGuestIdUseCase --> Clock
-    VerifyGuestIdUseCase --> EventPublisher
-    OverrideAgePolicyUseCase ..> OverrideAgePolicyCommand
-    OverrideAgePolicyUseCase --> AuthorizeStaffActionUseCase : AGE_POLICY_OVERRIDE
-    OverrideAgePolicyUseCase --> IdVerificationRepository
-    OverrideAgePolicyUseCase --> EventPublisher
-    OverrideAgePolicyUseCase ..> OverrideNotAllowedError : raises
-
-    IdVerificationView --> VerifyGuestIdUseCase
-    AgeOverrideView --> OverrideAgePolicyUseCase
+    VerifyGuestIdUseCase ..> IdVerification
+    ApproveAgeOverrideUseCase ..> AgeOverride
+    ApproveAgeOverrideUseCase --> AuditLog
+    ApproveAgeOverrideUseCase --> RealtimePublisher
+    ApproveEarlyCheckInUseCase --> CheckInWindow
+    ApproveEarlyCheckInUseCase --> RoomAvailabilityReader
+    ApproveEarlyCheckInUseCase ..> EarlyCheckInApproval
+    ChannelsRealtimePublisher ..|> RealtimePublisher
+    CheckInViews --> VerifyGuestIdUseCase
+    CheckInViews --> ApproveEarlyCheckInUseCase
+    CheckInViews --> CancelReservationUseCase
+    AgeOverrideView --> ApproveAgeOverrideUseCase
+    CheckInConsumer ..> RealtimePublisher
 ```
 
 ### Design notes
-- **`AgePolicy`** calculates the age from the date of birth on the government ID, against the **property's local date** of check-in (`MINIMUM_AGE = 21`). Birthdays on the check-in day count as already reached.
-- **Override (Scenario 3):**
-  - `OverrideAgePolicyUseCase` checks the `AGE_POLICY_OVERRIDE` permission (management only, US-01) for the **manager** who approves, not for the agent at the desk;
-  - how the manager authenticates for the override is PENDING;
-  - whether a justification and an audit record are required is PENDING (`justification` is optional).
-- **`allows_check_in()`** is true for `ELIGIBLE`, or for `UNDERAGE` with an override. US-13 asks this before completing the check-in.
-- **Check-in window:** `CheckInWindowPolicy` enforces "check-in starts at 4:00 PM" in the property's timezone. Early check-in handling is PENDING; until it is defined, early attempts are rejected (`CheckInTooEarlyError`).
-- **Data minimisation (PIPEDA):**
-  - the date of birth is used to compute the result;
-  - only the result is persisted by default;
-  - which ID data may be stored is PENDING (see the ER notes).
+- **The date of birth is used in memory only** to compute the age; it is never persisted or logged.
+- **Override (Scenarios 3 and 4):** `ApproveAgeOverrideUseCase` requires the `AGE_OVERRIDE` permission (GM only, US-01), a reservation whose verification result is `UNDER_AGE`, and a non-blank justification. It sets the result to `OVERRIDDEN`, writes the audit record and pushes `AgeOverrideApproved` to the check-in WebSocket channel, so the agent's open screen updates.
+- **Early check-in (Scenario 5):** allowed when the local time is before 4:00 PM, the front desk is open (`FrontDeskHours`, US-02) and an `AVAILABLE`, active room of the booked type exists. No fee is posted.
+- **No override:** the agent cancels with reason `GUEST_REQUEST`; US-11 applies the cancellation fee rules.
 
 ---
 
-## 2. ER Diagram (PostgreSQL persistence)
+## 2. ER Diagram
 
 ```mermaid
 erDiagram
-    RESERVATION ||--o| ID_VERIFICATION : "is verified by"
-    STAFF_MEMBER ||--o{ ID_VERIFICATION : "verifies"
-    ID_VERIFICATION ||--o| AGE_POLICY_OVERRIDE : "may be overridden by"
-    STAFF_MEMBER ||--o{ AGE_POLICY_OVERRIDE : "approves"
+    RESERVATION ||--o| ID_VERIFICATION : "verified by"
+    RESERVATION ||--o| AGE_OVERRIDE : "overridden by"
+    STAFF_USER ||--o{ ID_VERIFICATION : "verifies"
+    STAFF_USER ||--o{ AGE_OVERRIDE : "approves"
 
     ID_VERIFICATION {
-        uuid id PK
-        uuid reservation_id FK "UNIQUE"
-        varchar result "ELIGIBLE, UNDERAGE"
-        uuid verified_by_staff_id FK
-        timestamptz verified_at "UTC"
-        date date_of_birth "PENDING: stored only if allowed (PIPEDA)"
+        uuid reservation_id PK, FK
+        varchar id_type "DRIVERS_LICENCE, PASSPORT, PROVINCIAL_PHOTO_ID"
+        varchar result "PASSED, UNDER_AGE, OVERRIDDEN"
+        uuid verified_by FK
+        timestamptz verified_at
     }
-    AGE_POLICY_OVERRIDE {
-        uuid id PK
-        uuid id_verification_id FK "UNIQUE"
-        uuid approved_by_staff_id FK "must hold AGE_POLICY_OVERRIDE"
-        timestamptz approved_at "UTC"
-        text justification "PENDING: required or optional"
+    AGE_OVERRIDE {
+        uuid reservation_id PK, FK
+        uuid approved_by FK "General Manager"
+        text justification "not empty"
+        timestamptz approved_at
     }
     RESERVATION {
-        uuid id PK "partial: US-06"
+        uuid id PK "US-06"
+        uuid early_check_in_approved_by FK
+        timestamptz early_check_in_approved_at
     }
-    STAFF_MEMBER {
-        uuid id PK "partial: US-01"
+    STAFF_USER {
+        uuid id PK "US-01"
     }
 ```
-
-### Design notes
-- **Minimal storage by default:** `ID_VERIFICATION` stores who verified, when and the result. Columns such as `date_of_birth`, ID type or ID number are added only if PIPEDA review allows them (PENDING).
-- **Erasure:** any stored ID data is scrubbed by "Forget Me" (US-21).
-- **One record per reservation:** `UNIQUE (reservation_id)` keeps one verification per reservation. A re-verification updates that record.
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Verifying the ID — Scenarios 1 and 2
+### 3.1 ID check and GM override — Scenarios 1 to 4
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Agent as Front Desk Agent
-    participant View as IdVerificationView<br/>POST /api/v1/reservations/{id}/id-verification
-    participant UC as VerifyGuestIdUseCase
-    participant Win as CheckInWindowPolicy
-    participant Age as AgePolicy
-    participant Repo as IdVerificationRepository
-    participant Bus as EventPublisher
+    actor FDA as Front Desk Agent
+    actor GM as General Manager (own login, any device)
+    participant Desk as CheckInViews
+    participant Verify as VerifyGuestIdUseCase
+    participant Override as ApproveAgeOverrideUseCase
+    participant WS as CheckInConsumer
 
-    Agent->>View: POST {date_of_birth} after checking the government ID
-    View->>UC: execute(command)
-    UC->>Win: ensure_check_in_allowed(property, now_utc)
-    alt Before 4:00 PM local
-        Win-->>UC: raise CheckInTooEarlyError
-        UC-->>View: error
-        View-->>Agent: 409 Conflict (early check-in handling PENDING)
-    else From 4:00 PM local
-        UC->>Age: evaluate(date_of_birth, local check-in date)
-        alt Age 21 or older (Scenario 1)
-            Age-->>UC: ELIGIBLE
-            UC->>Repo: add(IdVerification ELIGIBLE)
-            UC->>Bus: publish(GuestIdVerified)
-            UC-->>View: result ELIGIBLE
-            View-->>Agent: 200 OK, check-in may proceed (deposit, US-13)
-        else Under 21 (Scenario 2)
-            Age-->>UC: UNDERAGE
-            UC->>Repo: add(IdVerification UNDERAGE)
-            UC->>Bus: publish(GuestIdVerified)
-            UC-->>View: result UNDERAGE
-            View-->>Agent: 200 OK, check-in blocked, management override available
+    FDA->>Desk: ID type and date of birth from the ID
+    Desk->>Verify: execute(...)
+    alt age 21 or more on the local check-in date
+        Verify-->>FDA: PASSED, continue to deposit (US-13)
+    else under 21
+        Verify-->>FDA: UNDER_AGE, check-in blocked
+        FDA->>WS: waits on the open check-in screen
+        GM->>Override: opens the blocked check-in, enters a justification
+        alt justification empty
+            Override-->>GM: 422 justification required
+        else justification given
+            Override->>Override: result OVERRIDDEN, audit record (who, when, why)
+            Override->>WS: AgeOverrideApproved
+            WS-->>FDA: screen updates, continue to deposit
         end
     end
 ```
 
-### 3.2 Management override — Scenario 3
+### 3.2 Check-in gate before the deposit
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor Manager as General Manager
-    participant View as AgeOverrideView<br/>POST /api/v1/reservations/{id}/age-override
-    participant UC as OverrideAgePolicyUseCase
-    participant Auth as AuthorizeStaffActionUseCase (US-01)
-    participant Repo as IdVerificationRepository
-    participant Bus as EventPublisher
-
-    Manager->>View: POST override (justification PENDING)
-    View->>UC: execute(command)
-    UC->>Auth: execute(manager_id, AGE_POLICY_OVERRIDE)
-    alt Not management
-        Auth-->>UC: raise PermissionDeniedError
-        UC-->>View: error
-        View-->>Manager: 403 Forbidden
-    else Management
-        UC->>Repo: get_by_reservation(reservation_id)
-        Repo-->>UC: IdVerification (UNDERAGE)
-        UC->>UC: apply_override(AgeOverride)
-        UC->>Repo: save(verification)
-        UC->>Bus: publish(AgePolicyOverridden)
-        UC-->>View: allows_check_in = true
-        View-->>Manager: 200 OK, check-in may proceed
-    end
-    Note over Manager,View: How the manager authenticates at the desk for the override is PENDING
+flowchart TD
+    A[Check-in opened] --> B{ID verified?<br/>PASSED or OVERRIDDEN}
+    B -- no --> X1[Blocked]
+    X1 -. no override .-> C1["Cancel at guest's request, fees apply (US-11)"]
+    B -- yes --> D{Local time before 4 PM?}
+    D -- no --> G["Continue: deposit (US-13)"]
+    D -- yes --> E{Desk open and Available room of the type?}
+    E -- no --> X2[Wait until 4 PM]
+    E -- yes --> F[FDA approves early check-in, no fee]
+    F --> G
 ```
 
 ### 3.3 Domain events
 
-| Event | Emitted by | When | Payload | Consumers |
-|---|---|---|---|---|
-| `GuestIdVerified` | `VerifyGuestIdUseCase` | ID checked | `reservation_id`, `result`, `occurred_at_utc` | Front desk dashboard flag (US-10, read side) |
-| `AgePolicyOverridden` | `OverrideAgePolicyUseCase` | Management override applied | `reservation_id`, `approved_by`, `occurred_at_utc` | PENDING (audit, if required) |
+| Event | Raised when | Consumers |
+|---|---|---|
+| `GuestIdVerified` | ID result saved | Dashboard flag (US-10) |
+| `AgeOverrideApproved` | GM approves | Agent's check-in screen (WebSocket), audit log |
+| `EarlyCheckInApproved` | FDA approves | Dashboard flag (US-10) |

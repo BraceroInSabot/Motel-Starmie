@@ -1,8 +1,22 @@
 # US-15 — Folio Ledger: Diagrams
 
-> Sources: `US-15-folio-ledger.md`, `US-04-localized-tax-calculation.md`, `docs/Business Modeling/Business Modeling.md` (Section 2 "Folio", Section 4 "Financial Precision"), `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
-> Data is scoped per **Property** (Business Modeling, Section 5) through the reservation each folio belongs to.
+> Source: `US-15-folio-ledger.md`. Posting stories: US-06, US-07, US-09 (payments), US-11 (fees and refunds), US-13 (cash deposit), US-14 (room nights and taxes), US-16 (fines and captures), US-17 (check-out).
+
+## Business rules reflected
+
+| Rule (US-15) | Where it appears |
+|---|---|
+| Exactly one folio per reservation | `FOLIO.reservation_id` unique, created with the reservation |
+| Double-entry ledger | `LedgerEntry` with balanced `LedgerLine` debits and credits |
+| Charge types: room night, taxes (HST, levy), fines, cancellation fee, no-show fee | `EntryType` (charges) |
+| Payment types: Stripe card, OTA prepaid, cash, deposit captured from a hold, cash deposit received and returned, refunds | `EntryType` (payments) |
+| Only these types; no manual charges | `PostingRules` maps each type to fixed accounts; no free-form endpoint |
+| Split payments | Many payment entries per folio |
+| Corrections GM only: void a charge, refund through Stripe or cash | `VoidEntryUseCase`, `IssueRefundUseCase` |
+| Corrections add a reversing entry with a reason, who and when; never edit or delete | `reverses_entry_id`, append-only table |
+| Starting accounts (adjustable by an accountant) | `Account` enum |
+| CAD only | `Money.currency = CAD` check |
+| FDA and GM view folios; Housekeepers never | `FRONT_DESK_WORK` permission (US-01) |
 
 ---
 
@@ -14,307 +28,245 @@ classDiagram
 
     namespace Domain {
         class Folio {
-            <<Entity / Aggregate Root>>
-            -FolioId id
-            -ReservationId reservation_id
-            -Currency currency
-            -list~FolioTransaction~ transactions
-            -int version
-            +open(reservation_id: ReservationId)$ Folio
-            +post_charge(charge: ChargeRequest) FolioTransaction
-            +post_payment(payment: PaymentRequest) FolioTransaction
+            <<Aggregate Root>>
+            +FolioId id
+            +ReservationId reservation_id
+            +list~LedgerEntry~ entries
+            +post(entry_type, amount, context) LedgerEntry
+            +reverse(entry_id, reason, gm) LedgerEntry
             +balance() Money
         }
-        class FolioTransaction {
+        class LedgerEntry {
             <<Entity · immutable>>
-            -FolioTransactionId id
-            -TransactionType type
-            -str description
-            -PostingKey | None posting_key
-            -list~LedgerLine~ lines
-            -datetime posted_at_utc
-            +is_balanced() bool
+            +EntryId id
+            +EntryType type
+            +Money amount
+            +list~LedgerLine~ lines
+            +EntryId reverses
+            +str reason
+            +Actor posted_by
+            +datetime posted_at
         }
         class LedgerLine {
             <<Value Object>>
-            +LedgerAccount account
+            +Account account
             +Money debit
             +Money credit
-            +str | None tax_code
         }
-        class LedgerAccount {
-            <<Enumeration · chart of accounts PENDING>>
+        class EntryType {
+            <<Enumeration>>
+            ROOM_NIGHT
+            TAX_HST
+            TAX_MARKETING_LEVY
+            FINE
+            CANCELLATION_FEE
+            NO_SHOW_FEE
+            STRIPE_CARD
+            OTA_PREPAID
+            CASH
+            DEPOSIT_CAPTURED
+            CASH_DEPOSIT_RECEIVED
+            CASH_DEPOSIT_RETURNED
+            REFUND_STRIPE
+            REFUND_CASH
+        }
+        class Account {
+            <<Enumeration>>
             GUEST_RECEIVABLE
+            CASH
+            CARD_STRIPE
+            OTA_RECEIVABLE
             ROOM_REVENUE
             FINE_REVENUE
-            TAX_PAYABLE
-            CASH
-            CARD_CLEARING
-            DEPOSIT_CLEARING
+            FEE_REVENUE
+            HST_PAYABLE
+            MARKETING_LEVY_PAYABLE
+            CASH_DEPOSITS_HELD
         }
-        class TransactionType {
-            <<Enumeration>>
-            ROOM_CHARGE
-            FINE
-            PAYMENT_CASH
-            PAYMENT_CARD
-            PAYMENT_DEPOSIT
+        class PostingRules {
+            <<Domain Service>>
+            +lines_for(entry_type, amount) list~LedgerLine~
         }
-        class PostingKey {
-            <<Value Object>>
-            +str value
-        }
-        class Money {
-            <<Value Object · US-04>>
-            +Decimal amount
-            +Currency currency
-            +add(other: Money) Money
-            +subtract(other: Money) Money
-        }
-        class FolioOpened {
-            <<Domain Event>>
-            +FolioId folio_id
-            +ReservationId reservation_id
-            +datetime occurred_at_utc
-        }
-        class ChargePosted {
-            <<Domain Event>>
-            +FolioId folio_id
-            +TransactionType type
-            +Money amount
-            +list~TaxLine~ taxes
-            +datetime occurred_at_utc
-        }
-        class PaymentPosted {
-            <<Domain Event>>
-            +FolioId folio_id
-            +TransactionType type
-            +Money amount
-            +datetime occurred_at_utc
-        }
-        class UnbalancedTransactionError {
-            <<Domain Exception>>
-        }
-        class CurrencyMismatchError {
-            <<Domain Exception>>
-        }
-        class DuplicatePostingError {
-            <<Domain Exception>>
+        class FolioRepository {
+            <<Port>>
         }
     }
 
     namespace Application {
-        class CreateFolioOnReservationCreated {
-            <<Event Handler>>
-            +handle(event: ReservationCreated) None
+        class FolioService {
+            <<Application Service>>
+            +post(reservation_id, entry_type, amount, context) LedgerEntry
         }
-        class PostChargeUseCase {
-            <<Use Case>>
-            +execute(command: PostChargeCommand) FolioTransactionId
+        class VoidEntryUseCase {
+            <<GM>>
+            +execute(entry_id, reason, gm) None
         }
-        class PostPaymentUseCase {
-            <<Use Case>>
-            +execute(command: PostPaymentCommand) FolioTransactionId
+        class IssueRefundUseCase {
+            <<GM>>
+            +execute(folio_id, amount, method, reason, gm) None
         }
         class GetFolioUseCase {
-            <<Query Use Case>>
-            +execute(reservation_id: ReservationId) FolioView
+            <<Query · FDA and GM>>
         }
-        class FolioView {
-            <<DTO>>
-            +UUID folio_id
-            +list~FolioLineView~ entries
-            +Money balance
-        }
-        class FolioRepository {
+        class PaymentGateway {
             <<Port>>
-            +add(folio: Folio) None
-            +get_by_reservation(reservation_id: ReservationId) Folio
-            +save(folio: Folio) None
         }
-        class UnitOfWork {
-            <<Port>>
-            +commit() None
-        }
-        class EventPublisher {
-            <<Port>>
-            +publish(event: DomainEvent) None
+    }
+
+    namespace Infrastructure {
+        class DjangoFolioRepository {
+            <<append-only tables>>
         }
     }
 
     namespace Interface {
-        class FolioDetailView {
-            <<REST Controller>>
-            +get(request, reservation_id) Response
-        }
-        class FolioChargesView {
-            <<REST Controller>>
-            +post(request, reservation_id) Response
-        }
-        class FolioPaymentsView {
-            <<REST Controller>>
-            +post(request, reservation_id) Response
+        class FolioViews {
+            <<REST>>
+            GET /api/v1/reservations/id/folio
+            POST /api/v1/folio-entries/id/void
+            POST /api/v1/folios/id/refunds
         }
     }
 
-    Folio *-- FolioTransaction
-    FolioTransaction *-- LedgerLine
-    FolioTransaction --> TransactionType
-    FolioTransaction *-- PostingKey
-    LedgerLine --> LedgerAccount
-    LedgerLine *-- Money
-    FolioTransaction ..> UnbalancedTransactionError : raises
-    Folio ..> CurrencyMismatchError : raises
-    Folio ..> DuplicatePostingError : raises
-    Folio ..> FolioOpened : records
-    Folio ..> ChargePosted : records
-    Folio ..> PaymentPosted : records
-
-    CreateFolioOnReservationCreated --> FolioRepository
-    PostChargeUseCase --> FolioRepository
-    PostChargeUseCase --> UnitOfWork
-    PostChargeUseCase --> EventPublisher
-    PostPaymentUseCase --> FolioRepository
-    PostPaymentUseCase --> UnitOfWork
-    PostPaymentUseCase --> EventPublisher
+    Folio *-- LedgerEntry
+    LedgerEntry *-- LedgerLine
+    LedgerEntry --> EntryType
+    LedgerLine --> Account
+    Folio --> PostingRules
+    FolioService --> FolioRepository
+    VoidEntryUseCase --> FolioRepository
+    IssueRefundUseCase --> FolioRepository
+    IssueRefundUseCase --> PaymentGateway
     GetFolioUseCase --> FolioRepository
-    GetFolioUseCase ..> FolioView
-
-    FolioDetailView --> GetFolioUseCase
-    FolioChargesView --> PostChargeUseCase
-    FolioPaymentsView --> PostPaymentUseCase
+    DjangoFolioRepository ..|> FolioRepository
+    FolioViews --> GetFolioUseCase
+    FolioViews --> VoidEntryUseCase
+    FolioViews --> IssueRefundUseCase
 ```
 
 ### Design notes
-- **Double-entry:** every `FolioTransaction` has at least two `LedgerLine`s, and the sum of debits equals the sum of credits (`UnbalancedTransactionError` otherwise).
-  - **Charge** (e.g., room night with HST): debit `GUEST_RECEIVABLE` for the gross amount; credit `ROOM_REVENUE` for the net amount and `TAX_PAYABLE` (with `tax_code`) for the tax.
-  - **Payment** (cash, card or deposit): debit `CASH` / `CARD_CLEARING` / `DEPOSIT_CLEARING`; credit `GUEST_RECEIVABLE`.
-- **Balance:** `balance()` is the debit balance of `GUEST_RECEIVABLE`. It must be `0.00` for check-out (US-17).
-- **Immutability:** posted transactions are never edited or deleted. Corrections such as voids and refunds will be new reversing transactions; their rules and who authorizes them are PENDING.
-- **`PostingKey`** makes postings idempotent. For example, `ROOM_CHARGE:{business_date}` lets the Night Audit (US-14) post each night only once (`DuplicatePostingError`).
-- **Money everywhere:** amounts are `Money` (`Decimal` plus currency, US-04). Mixing currencies raises `CurrencyMismatchError`. The folio currency is CAD.
-- **The chart of accounts is a minimal proposal** to satisfy double-entry. The final account list is PENDING validation by the business or an accountant.
-- **PENDING:** whether split folios are supported (the model keeps one folio per reservation).
-- **Permission:** reading and posting require `FINANCIAL_DATA_ACCESS`, so Housekeepers are denied (US-01).
+- **Posting rules (debit / credit):**
+
+  | Entry type | Debit | Credit |
+  |---|---|---|
+  | `ROOM_NIGHT` | Guest receivable | Room revenue |
+  | `TAX_HST` / `TAX_MARKETING_LEVY` | Guest receivable | HST payable / Marketing Levy payable |
+  | `FINE` | Guest receivable | Fine revenue |
+  | `CANCELLATION_FEE` / `NO_SHOW_FEE` | Guest receivable | Fee revenue |
+  | `STRIPE_CARD` | Card (Stripe) | Guest receivable |
+  | `OTA_PREPAID` | OTA receivable | Guest receivable |
+  | `CASH` | Cash | Guest receivable |
+  | `DEPOSIT_CAPTURED` | Card (Stripe) | Guest receivable |
+  | `CASH_DEPOSIT_RECEIVED` | Cash | Cash deposits held |
+  | `CASH_DEPOSIT_RETURNED` | Cash deposits held | Cash |
+  | `REFUND_STRIPE` / `REFUND_CASH` | Guest receivable | Card (Stripe) / Cash |
+
+- **Balance** = debits − credits on guest receivable. Cash deposit entries do not touch guest receivable, so they never change the amount the guest owes; fines deducted from a cash deposit are settled at check-out (US-17).
+- **Void (Scenario 5):** only charge entries can be voided; the reversing entry swaps debits and credits, stores `reverses_entry_id`, the reason and the GM. An entry can be reversed only once.
+- **Refund correction:** `REFUND_STRIPE` calls Stripe first and posts after success; `REFUND_CASH` is posted when the GM hands back cash.
+- **Database protection:** no `UPDATE` or `DELETE` grants on the ledger tables for the application role; a trigger rejects both.
 
 ---
 
-## 2. ER Diagram (PostgreSQL persistence)
+## 2. ER Diagram
 
 ```mermaid
 erDiagram
-    RESERVATION ||--|| FOLIO : "has exactly one"
-    FOLIO ||--o{ FOLIO_TRANSACTION : "records"
-    FOLIO_TRANSACTION ||--|{ LEDGER_LINE : "is made of"
-    LEDGER_ACCOUNT ||--o{ LEDGER_LINE : "classifies"
-    STAFF_MEMBER ||--o{ FOLIO_TRANSACTION : "posts"
-    NIGHT_AUDIT_RUN ||--o{ FOLIO_TRANSACTION : "posts"
+    RESERVATION ||--|| FOLIO : "has"
+    FOLIO ||--o{ LEDGER_ENTRY : "contains"
+    LEDGER_ENTRY ||--|{ LEDGER_LINE : "balanced lines"
+    LEDGER_ENTRY |o--o| LEDGER_ENTRY : "reverses"
 
     FOLIO {
         uuid id PK
-        uuid reservation_id FK "UNIQUE, NOT NULL"
+        uuid reservation_id FK, UK
         char currency "CAD"
-        int version "optimistic locking"
-        timestamptz created_at "UTC"
+        numeric balance "cached, recomputed from lines"
     }
-    FOLIO_TRANSACTION {
+    LEDGER_ENTRY {
         uuid id PK
         uuid folio_id FK
-        varchar transaction_type "ROOM_CHARGE, FINE, PAYMENT_CASH, PAYMENT_CARD, PAYMENT_DEPOSIT"
-        varchar description
-        varchar posting_key "nullable, UNIQUE (folio_id, posting_key)"
-        date business_date "nullable, set for room charges"
-        uuid posted_by_staff_id FK "nullable (system postings)"
-        uuid night_audit_run_id FK "nullable, US-14"
-        timestamptz posted_at "UTC"
+        varchar entry_type
+        numeric amount
+        char currency "CAD"
+        date stay_date "room nights and taxes"
+        uuid tax_rate_id FK "US-04"
+        numeric rate_applied
+        uuid violation_report_id FK "US-16, unique"
+        uuid deposit_id FK "US-13"
+        uuid night_charge_id FK "US-14"
+        varchar external_ref "Stripe id"
+        uuid reverses_entry_id FK, UK
+        text reason "required for corrections"
+        varchar posted_by_type "STAFF or SYSTEM"
+        uuid posted_by FK
+        timestamptz posted_at
     }
     LEDGER_LINE {
         uuid id PK
-        uuid transaction_id FK
-        varchar account_code FK
-        numeric debit_amount "numeric(12,2), >= 0"
-        numeric credit_amount "numeric(12,2), >= 0"
-        char currency "CAD"
-        varchar tax_code "nullable: GST, HST, PST"
-    }
-    LEDGER_ACCOUNT {
-        varchar code PK "chart of accounts PENDING"
-        varchar name
-        varchar account_type "ASSET, LIABILITY, REVENUE"
+        uuid entry_id FK
+        varchar account
+        numeric debit
+        numeric credit
     }
     RESERVATION {
-        uuid id PK "partial: US-06"
-    }
-    STAFF_MEMBER {
-        uuid id PK "partial: US-01"
-    }
-    NIGHT_AUDIT_RUN {
-        uuid id PK "partial: US-14"
+        uuid id PK "US-06"
     }
 ```
 
 ### Design notes
-- **Balanced transactions in the database:** a deferred constraint trigger checks that `SUM(debit_amount) = SUM(credit_amount)` per `transaction_id` at commit time.
-- **Line checks:** `CHECK (debit_amount = 0 OR credit_amount = 0)` keeps each line one-sided, and `CHECK (debit_amount >= 0 AND credit_amount >= 0)` forbids negative amounts.
-- **Append-only:** `FOLIO_TRANSACTION` and `LEDGER_LINE` are insert-only. The application database user has no `UPDATE`/`DELETE` privilege on them.
-- **Balance query:** `SUM(debit) - SUM(credit)` on `GUEST_RECEIVABLE` lines of the folio. It can be cached on `FOLIO` later if needed.
+- `CHECK` per entry: the sum of debits equals the sum of credits (deferred constraint trigger).
+- Amounts are `numeric(12,2)`; `currency` is `CAD` by `CHECK`.
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Folio created with the reservation — Scenario 1
+### 3.1 Posting and split payment — Scenarios 2 and 4
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Book as BookingService (US-06)
-    participant Bus as EventPublisher
-    participant H as CreateFolioOnReservationCreated
-    participant Folio as Folio
+    participant Caller as Posting story (e.g., US-17)
+    participant Svc as FolioService
+    participant Folio
+    participant Rules as PostingRules
     participant Repo as FolioRepository
 
-    Book->>Bus: publish(ReservationCreated) inside the booking transaction
-    Bus->>H: handle(event)
-    H->>Folio: Folio.open(reservation_id)
-    Folio-->>H: Folio (CAD, empty, balance 0.00)
-    H->>Repo: add(folio)
-    Note over Book,Repo: Same transaction as the reservation, so a reservation never exists without its folio
+    Caller->>Svc: post(reservation, STRIPE_CARD, 80.00 CAD)
+    Svc->>Repo: load folio
+    Svc->>Folio: post(STRIPE_CARD, 80.00)
+    Folio->>Rules: lines_for(STRIPE_CARD, 80.00)
+    Rules-->>Folio: debit Card (Stripe), credit Guest receivable
+    Caller->>Svc: post(reservation, CASH, 20.00 CAD)
+    Svc->>Folio: post(CASH, 20.00)
+    Svc->>Repo: append entries
+    Svc-->>Caller: balance 0.00
 ```
 
-### 3.2 Posting a charge and a payment — Scenarios 2 and 3
+### 3.2 Correction — Scenarios 5 and 6
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant Caller as Night Audit (US-14) / Front Desk
-    participant UC as PostChargeUseCase / PostPaymentUseCase
-    participant Repo as FolioRepository
-    participant Folio as Folio
-    participant Bus as EventPublisher
-
-    Caller->>UC: post ROOM_CHARGE 100.00 CAD + HST (rate US-04)
-    UC->>Repo: get_by_reservation(reservation_id)
-    Repo-->>UC: Folio
-    UC->>Folio: post_charge(net 100.00, taxes [HST], posting_key)
-    Folio->>Folio: lines: DR GUEST_RECEIVABLE gross / CR ROOM_REVENUE 100.00 / CR TAX_PAYABLE (HST)
-    Folio->>Folio: is_balanced() and Decimal precision check
-    UC->>Repo: save(folio) with version check
-    UC->>Bus: publish(ChargePosted)
-    UC-->>Caller: transaction id, balance updated
-
-    Caller->>UC: post PAYMENT_CARD (gross amount)
-    UC->>Folio: post_payment(CARD, amount)
-    Folio->>Folio: lines: DR CARD_CLEARING / CR GUEST_RECEIVABLE
-    UC->>Repo: save(folio)
-    UC->>Bus: publish(PaymentPosted)
-    UC-->>Caller: balance 0.00
+flowchart TD
+    A[Correction requested] --> B{Actor is the GM?}
+    B -- no --> X[403 denied]
+    B -- yes --> C{Reason given?}
+    C -- no --> Y[422 reason required]
+    C -- yes --> D{Void or refund?}
+    D -- void --> E[Reversing entry, original kept]
+    D -- refund --> F{Stripe or cash?}
+    F -- Stripe --> G[Stripe refund, then REFUND_STRIPE entry]
+    F -- cash --> H[REFUND_CASH entry]
+    E --> Z[Who, when and reason recorded]
+    G --> Z
+    H --> Z
 ```
 
 ### 3.3 Domain events
 
-| Event | Emitted by | When | Payload | Consumers |
-|---|---|---|---|---|
-| `FolioOpened` | `Folio` | Reservation created | `folio_id`, `reservation_id`, `occurred_at_utc` | none |
-| `ChargePosted` | `Folio` | Room charge or fine posted | `folio_id`, `type`, `amount`, `taxes`, `occurred_at_utc` | Reports (US-22) |
-| `PaymentPosted` | `Folio` | Cash, card or deposit payment posted | `folio_id`, `type`, `amount`, `occurred_at_utc` | Check-out readiness (US-17, read side) |
+| Event | Raised when | Consumers |
+|---|---|---|
+| `FolioOpened` | Reservation created | — |
+| `LedgerEntryPosted` | Any posting | Dashboard balance flag (US-10), reports (US-22, US-23) |
+| `LedgerEntryReversed` | GM void | Audit log, reports |
+| `RefundIssued` | GM refund | Audit log |

@@ -1,8 +1,21 @@
 # US-23 — Occupancy Reporting: Diagrams
 
-> Sources: `US-23-occupancy-reporting.md`, `US-06-reservation-creation-with-secure-card-tokenization.md`, `docs/Business Modeling/Business Modeling.md` (Personas: "yield management, occupancy rates"), `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
-> Reports are generated per **Property** (Business Modeling, Section 5). Whether a consolidated view is needed is PENDING.
+> Source: `US-23-occupancy-reporting.md`. Related: US-14 (nights charged), US-15 (voids), US-19 (room state history), US-22 (header and export).
+
+## Business rules reflected
+
+| Rule (US-23) | Where it appears |
+|---|---|
+| Occupancy % = occupied ÷ available room-nights × 100, 1 decimal | `OccupancyMetrics.occupancy()` |
+| Available room-nights per night: active rooms minus rooms Unavailable or Maintenance at the 2:00 AM Night Audit (from room history) | `AvailableRoomNightsQuery` on `ROOM_STATE_HISTORY` |
+| Occupied room-nights: nights charged by the Night Audit, excluding voids; No-Show and Canceled not counted | `NIGHT_CHARGE` + non-voided `ROOM_NIGHT` entries |
+| ADR = room revenue ÷ occupied room-nights | `OccupancyMetrics.adr()` |
+| RevPAR = room revenue ÷ available room-nights | `OccupancyMetrics.revpar()` |
+| Revenue excludes taxes; CAD; rounded to the cent, halves up | `ROOM_NIGHT` entries only; `Money.round_half_up()` |
+| "N/A" when there is nothing to divide by | `Optional` result → "N/A" |
+| Any date range; totals, daily breakdown and by room type | `OccupancyReport` DTO |
+| No dynamic pricing | Read-only report |
+| GM only, one property at a time, same header and PDF/CSV export as US-22 | `FINANCIAL_REPORTS`, `ReportHeader`, `ExportReportUseCase` |
 
 ---
 
@@ -13,27 +26,20 @@ classDiagram
     direction LR
 
     namespace Domain {
-        class OccupancyInputs {
+        class RoomNightCounts {
             <<Value Object>>
-            +ReportingPeriod period
-            +int available_room_nights
-            +int occupied_room_nights
+            +int available
+            +int occupied
+            +Money room_revenue
         }
-        class OccupancyCalculator {
-            <<Interface · Strategy>>
-            +calculate(inputs: OccupancyInputs) OccupancyRate
-        }
-        class RoomNightsOccupancyCalculator {
-            <<Strategy · formula PENDING confirmation>>
-            +calculate(inputs: OccupancyInputs) OccupancyRate
-        }
-        class OccupancyRate {
-            <<Value Object>>
-            +Decimal value
-            +as_percentage() Decimal
+        class OccupancyMetrics {
+            <<Domain Service>>
+            +occupancy(counts) Decimal
+            +adr(counts) Money
+            +revpar(counts) Money
         }
         class ReportingPeriod {
-            <<Value Object · US-22>>
+            <<Value Object>>
             +date start_local
             +date end_local
         }
@@ -42,75 +48,66 @@ classDiagram
     namespace Application {
         class GetOccupancyReportUseCase {
             <<Query Use Case>>
-            +execute(property_id: PropertyId, period: ReportingPeriod) OccupancyReport
+            +execute(property_id, period) OccupancyReport
         }
         class OccupancyReport {
             <<DTO>>
-            +ReportingPeriod period
+            +ReportHeader header
+            +OccupancyLine totals
+            +list~OccupancyLine~ by_day
+            +list~OccupancyLine~ by_room_type
+        }
+        class OccupancyLine {
+            <<DTO>>
+            +str label
             +int available_room_nights
             +int occupied_room_nights
-            +Decimal occupancy_percentage
-            +list~DailyOccupancy~ days
-        }
-        class DailyOccupancy {
-            <<DTO>>
-            +date stay_date
-            +int available
-            +int occupied
-            +Decimal percentage
+            +str occupancy_percent
+            +str adr
+            +str revpar
+            +Money room_revenue
         }
         class OccupancyReadModel {
-            <<Port · read side>>
-            +daily_counts(property_id, start_local, end_local) list~DailyCountRow~
+            <<Port>>
+            +available_by_night(property_id, period) list~Row~
+            +occupied_by_night(property_id, period) list~Row~
+        }
+        class ExportReportUseCase {
+            <<US-22>>
         }
     }
 
     namespace Infrastructure {
         class PostgresOccupancyReadModel {
-            <<Adapter · SQL aggregation>>
+            <<SQL on room history and night charges>>
         }
     }
 
     namespace Interface {
         class OccupancyReportView {
-            <<REST Controller>>
-            +get(request, property_id) Response
-        }
-        class RequiresPermission {
-            <<Authorization Guard · US-01>>
-            +check(request, permission: Permission) None
+            <<REST · FINANCIAL_REPORTS>>
+            GET /api/v1/properties/id/reports/occupancy?from=&to=
         }
     }
 
-    RoomNightsOccupancyCalculator ..|> OccupancyCalculator
-    OccupancyCalculator ..> OccupancyInputs
-    OccupancyCalculator ..> OccupancyRate
-    OccupancyInputs *-- ReportingPeriod
-
+    OccupancyMetrics ..> RoomNightCounts
     GetOccupancyReportUseCase --> OccupancyReadModel
-    GetOccupancyReportUseCase --> OccupancyCalculator
+    GetOccupancyReportUseCase --> OccupancyMetrics
+    GetOccupancyReportUseCase ..> ReportingPeriod
     GetOccupancyReportUseCase ..> OccupancyReport
-    OccupancyReport *-- DailyOccupancy
+    OccupancyReport *-- OccupancyLine
     PostgresOccupancyReadModel ..|> OccupancyReadModel
-
-    OccupancyReportView --> RequiresPermission : REPORTS_ACCESS
     OccupancyReportView --> GetOccupancyReportUseCase
+    OccupancyReportView --> ExportReportUseCase
 ```
 
 ### Design notes
-- **The formula is PENDING, so it sits behind the `OccupancyCalculator` strategy (Open/Closed principle).**
-  - `RoomNightsOccupancyCalculator` uses the industry-standard *occupied room-nights ÷ available room-nights*, and is a placeholder until the business confirms the formula.
-  - Other indicators, such as ADR or RevPAR, if requested, become new strategies or report fields without changing the use case.
-- **Inputs per night:**
-  - **available room-nights:** `ROOM_INVENTORY.total_rooms` per room type and night (US-06);
-  - **occupied room-nights:** `RESERVATION_NIGHT` rows of reservations that were actually stayed (`IN_HOUSE` or `CHECKED_OUT`);
-  - whether Out-of-Order rooms reduce the available count depends on US-19 states that are still PENDING.
-- **Precision:** the rate is `Decimal`, and the period is in the property's local dates (stay nights are local calendar dates).
-- **Permission:** `REPORTS_ACCESS` (General Manager, US-01).
-- **PENDING:**
-  - the occupancy formula and other yield indicators (ADR, RevPAR);
-  - whether yield management includes dynamic pricing or only reporting;
-  - a consolidated view across properties.
+- **Available room-nights** for night *N*: rooms that are active, minus rooms whose state at the moment of that night's Night Audit (2:00 AM local on *N* + 1, from `ROOM_STATE_HISTORY`) was `UNAVAILABLE` or `MAINTENANCE`.
+- **Occupied room-nights** for night *N*: `NIGHT_CHARGE` rows with `stay_date = N` whose `ROOM_NIGHT` entry has not been voided. No-Show and Canceled reservations are never charged by the audit, so they are naturally excluded.
+- **Room revenue:** sum of non-voided `ROOM_NIGHT` amounts (no taxes).
+- **Verified example (Scenario 2):** 20 active rooms, 2 in Maintenance → 18 available; 9 occupied; $900.00 → occupancy 50.0%, ADR $100.00, RevPAR $50.00.
+- **Division by zero:** if available or occupied room-nights are 0, the corresponding value is "N/A".
+- **By room type:** the same counts grouped by the room type of the room (available) and of the reservation (occupied).
 
 ---
 
@@ -118,67 +115,69 @@ classDiagram
 
 ```mermaid
 erDiagram
-    PROPERTY ||--o{ ROOM_INVENTORY : "offers"
-    ROOM_TYPE ||--o{ ROOM_INVENTORY : "is counted in"
-    RESERVATION ||--|{ RESERVATION_NIGHT : "occupies"
-    ROOM_INVENTORY ||--o{ RESERVATION_NIGHT : "is consumed by"
+    ROOM ||--o{ ROOM_STATE_HISTORY : "records"
+    ROOM_TYPE ||--o{ ROOM : "templates"
+    RESERVATION ||--o{ NIGHT_CHARGE : "charged for"
+    NIGHT_CHARGE ||--|{ LEDGER_ENTRY : "posts"
 
-    ROOM_INVENTORY {
-        uuid id PK "US-06"
-        uuid property_id FK "property filter"
+    ROOM {
+        uuid id PK "US-02"
+        uuid property_id FK
         uuid room_type_id FK
-        date stay_date "period filter"
-        int total_rooms "available room-nights"
+        boolean is_active
     }
-    RESERVATION_NIGHT {
-        uuid reservation_id PK, FK "US-06"
-        date stay_date PK
-        uuid room_inventory_id FK
+    ROOM_STATE_HISTORY {
+        uuid id PK "US-19"
+        uuid room_id FK
+        varchar to_state
+        timestamptz changed_at "state at 2:00 AM"
+    }
+    NIGHT_CHARGE {
+        uuid id PK "US-14"
+        uuid reservation_id FK
+        date stay_date
+    }
+    LEDGER_ENTRY {
+        uuid id PK "US-15"
+        varchar entry_type "ROOM_NIGHT"
+        numeric amount "room revenue, no taxes"
+        uuid reverses_entry_id "voids excluded"
     }
     RESERVATION {
         uuid id PK "US-06"
-        uuid property_id FK
-        varchar status "IN_HOUSE or CHECKED_OUT count as occupied"
+        uuid room_type_id FK
     }
     ROOM_TYPE {
         uuid id PK "US-02"
     }
-    PROPERTY {
-        uuid id PK
-    }
 ```
-
-### Design notes
-- **No new table.** One aggregation query groups `ROOM_INVENTORY` and the matching `RESERVATION_NIGHT` rows by `stay_date` for the property and period.
-- **Index:** `ROOM_INVENTORY (property_id, stay_date)` supports the period filter.
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Generating the occupancy report — Scenario 1
+### 3.1 Generating the report — Scenarios 1 to 4
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor GM as General Manager
-    participant View as OccupancyReportView<br/>GET /api/v1/properties/{id}/reports/occupancy?from=&to=
+    participant View as OccupancyReportView
     participant UC as GetOccupancyReportUseCase
     participant RM as OccupancyReadModel
-    participant Calc as OccupancyCalculator
+    participant Metrics as OccupancyMetrics
 
-    GM->>View: GET occupancy for a local period
-    View->>UC: execute(property_id, ReportingPeriod)
-    UC->>RM: daily_counts(property_id, start, end)
-    RM-->>UC: per night: available room-nights, occupied room-nights
-    loop each night and the whole period
-        UC->>Calc: calculate(OccupancyInputs)
-        Calc-->>UC: OccupancyRate (formula PENDING confirmation)
+    GM->>View: GET occupancy (property, from, to)
+    View->>UC: execute(property_id, period)
+    UC->>RM: available_by_night (room history at 2:00 AM)
+    UC->>RM: occupied_by_night (charged, not voided)
+    loop period total, each day, each room type
+        UC->>Metrics: occupancy, ADR, RevPAR (N/A on division by zero)
     end
-    UC-->>View: OccupancyReport (period total + daily breakdown)
-    View-->>GM: 200 OK, occupancy rate for the period
+    UC-->>View: OccupancyReport
+    View-->>GM: report, or PDF/CSV export (US-22)
 ```
 
 ### 3.2 Domain events
 
-No domain event is emitted; this story is read-only. It reads the inventory and reservation nights maintained by US-06 and the lifecycle states set by US-11, US-13 and US-17.
+None. The report is read-only.

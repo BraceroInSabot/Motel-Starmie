@@ -1,209 +1,212 @@
 # US-09 — Walk-in Reservation: Diagrams
 
-> Sources: `US-09-walk-in-reservation.md`, `US-06-reservation-creation-with-secure-card-tokenization.md`, `docs/Business Modeling/Business Modeling.md` (Personas, Section 5), `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
-> Data is scoped per **Property** (Business Modeling, Section 5) even where the story text does not mention it.
+> Source: `US-09-walk-in-reservation.md`. Related: US-05 (T&C at the desk), US-06 (booking rules), US-12 and US-13 (check-in), US-15 (cash payment), US-20 (guest profile).
+
+## Business rules reflected
+
+| Rule (US-09) | Where it appears |
+|---|---|
+| Same availability, concurrency and tax rules | Reuses `QuoteStayService` and `InventoryRepository` (US-06) |
+| Created for the agent's property | `property_id` taken from the session (US-01), not from the request |
+| Walk-in starts today (property local date) and continues to check-in | `StayDates.check_in == today`, response links to check-in |
+| Same T&C acceptance, recorded by the agent | `AcceptTermsUseCase` with `FRONT_DESK` (US-05) |
+| Name, email (required), phone, PIPEDA consent | `DeskBookingCommand` validation |
+| Full stay paid at creation: card via Stripe fields on the desk screen, or cash recorded in the folio | `PaymentMethodChoice` = `CARD` or `CASH` |
+| Card tokenization only for card payers | No Stripe customer created for cash payers |
+| Walk-ins start Confirmed | `channel = WALK_IN`, `status = CONFIRMED` |
+| Phone bookings for future dates: same form, card only, start Unconfirmed | `channel = PHONE`, `status = UNCONFIRMED`, cash refused |
+| Arrival before 4:00 PM needs early check-in approval (US-12) | Flag on the reservation, handled at check-in |
+| Keyboard: Tab/Shift+Tab fixed order, arrows + Enter for room type, Ctrl+Enter submits | `WalkInForm` front-end component |
 
 ---
 
-## 1. Class Diagram (Clean Architecture + Front-end)
+## 1. Class Diagram (Clean Architecture)
 
 ```mermaid
 classDiagram
     direction LR
 
     namespace Domain {
-        class Reservation {
-            <<Entity / Aggregate Root · US-06>>
-            -ReservationId id
-            -PropertyId property_id
-            -BookingChannel channel
-            -StaffMemberId | None created_by
-        }
-        class BookingChannel {
+        class Channel {
             <<Enumeration · US-06>>
-            DIRECT
-            OTA
             WALK_IN
+            PHONE
         }
-        class NoAvailabilityError {
-            <<Domain Exception · US-06>>
+        class PaymentMethodChoice {
+            <<Enumeration>>
+            CARD
+            CASH
+        }
+        class DeskBookingPolicy {
+            <<Domain Service>>
+            +initial_status(channel) ReservationStatus
+            +allowed_payment(channel) set~PaymentMethodChoice~
+            +validate_dates(channel, dates, today_local) None
         }
     }
 
     namespace Application {
-        class CreateWalkInReservationUseCase {
-            <<Use Case>>
-            +execute(command: CreateWalkInReservationCommand) ReservationConfirmation
-        }
-        class CreateWalkInReservationCommand {
+        class DeskBookingCommand {
             <<DTO>>
-            +UUID property_id
-            +UUID room_type_id
-            +date check_in_date
-            +date check_out_date
-            +GuestData guest
-            +str guest_language
-            +str | None payment_method_token
-            +UUID staff_member_id
+            +Channel channel
+            +RoomTypeId room_type_id
+            +StayDates dates
+            +int guests
+            +GuestDetails guest
+            +bool pipeda_consent
+            +str terms_acceptance_token
+            +PaymentMethodChoice payment
+            +str payment_method_id
         }
-        class CheckAvailabilityUseCase {
-            <<Use Case · US-03>>
-            +execute(property_id, check_in_date, check_out_date) list~AvailableRoomType~
+        class CreateDeskBookingUseCase {
+            +execute(staff, cmd) ReservationCreated
         }
-        class BookingService {
-            <<Application Service · US-06>>
-            +book(request: BookingRequest) Reservation
+        class QuoteStayService {
+            <<US-03, US-04>>
         }
-        class UnitOfWork {
-            <<Port>>
-            +commit() None
-            +rollback() None
+        class InventoryRepository {
+            <<Port · US-06>>
+        }
+        class GuestProfileService {
+            <<US-20>>
+        }
+        class PaymentGateway {
+            <<Port · US-06>>
+        }
+        class FolioService {
+            <<US-15>>
+            +post_payment(folio, type, amount, staff) None
         }
     }
 
+    namespace Infrastructure {
+        class StripePaymentGateway
+    }
+
     namespace Interface {
-        class StaffReservationsView {
-            <<REST Controller>>
-            +post(request, property_id) Response
-        }
-        class RequiresPermission {
-            <<Authorization Guard · US-01>>
-            +check(request, permission: Permission) None
+        class DeskBookingView {
+            <<REST · FRONT_DESK_WORK>>
+            POST /api/v1/desk-bookings
         }
     }
 
     namespace FrontEnd {
-        class WalkInReservationForm {
-            <<React Component · MantineUI>>
-            +fields: dates, room type, guest data, language
-            +onSubmit() void
-        }
-        class KeyboardShortcuts {
-            <<Hook · Mantine useHotkeys>>
-            +bind(shortcut: string, action: Function) void
-        }
-        class AvailabilityPicker {
-            <<React Component>>
-            +onSelect(roomType) void
+        class WalkInForm {
+            <<React · MantineUI>>
+            +fixed tab order
+            +room type list with arrows and Enter
+            +Ctrl+Enter submits
+            +Stripe card fields when CARD
         }
     }
 
-    Reservation --> BookingChannel
-    CreateWalkInReservationUseCase ..> CreateWalkInReservationCommand
-    CreateWalkInReservationUseCase --> BookingService
-    CreateWalkInReservationUseCase --> UnitOfWork
-    CreateWalkInReservationUseCase ..> NoAvailabilityError : propagates
-    StaffReservationsView --> RequiresPermission : RESERVATION_CREATE
-    StaffReservationsView --> CreateWalkInReservationUseCase
-
-    WalkInReservationForm --> KeyboardShortcuts
-    WalkInReservationForm --> AvailabilityPicker
-    AvailabilityPicker ..> CheckAvailabilityUseCase : GET availability
-    WalkInReservationForm ..> StaffReservationsView : POST /api/v1/properties/{id}/reservations
+    DeskBookingPolicy ..> Channel
+    DeskBookingPolicy ..> PaymentMethodChoice
+    CreateDeskBookingUseCase ..> DeskBookingCommand
+    CreateDeskBookingUseCase --> DeskBookingPolicy
+    CreateDeskBookingUseCase --> QuoteStayService
+    CreateDeskBookingUseCase --> InventoryRepository
+    CreateDeskBookingUseCase --> GuestProfileService
+    CreateDeskBookingUseCase --> PaymentGateway
+    CreateDeskBookingUseCase --> FolioService
+    StripePaymentGateway ..|> PaymentGateway
+    DeskBookingView --> CreateDeskBookingUseCase
+    WalkInForm ..> DeskBookingView : POST
 ```
 
 ### Design notes
-- **Same rules as other bookings:** a walk-in is a reservation with `channel = WALK_IN` created through the same `BookingService` (US-06). Availability, optimistic locking, stay limits (1 to 5 nights) and localized taxes therefore match direct and OTA bookings.
-- **`created_by`** records the Front Desk Agent who created the reservation. Creating reservations at the desk requires a `RESERVATION_CREATE` permission (role-permission matrix, US-01).
-- **Property:** the reservation is created for the property where the agent is working (path parameter). How staff are assigned to properties is PENDING.
-- **Keyboard-only operation (Scenario 3):**
-  - the form follows a linear tab order, and every field is a native or MantineUI input reachable with `Tab`/`Shift+Tab`;
-  - the room type is chosen with the arrow keys plus `Enter`;
-  - `Ctrl+Enter` submits;
-  - `KeyboardShortcuts` uses MantineUI's `useHotkeys` hook, so no extra library is needed;
-  - the exact shortcut set is a UI proposal to confirm.
-- **`payment_method_token` is optional** because whether walk-ins go through card tokenization and T&C acceptance, and how cash guests are handled (including the deposit), are PENDING.
+- **`DeskBookingPolicy`:**
+  - `WALK_IN`: check-in must be today (property local date); status `CONFIRMED`; payment `CARD` or `CASH`.
+  - `PHONE`: check-in after today, within the US-03 booking window; status `UNCONFIRMED`; payment `CARD` only.
+- **Card payment:** the Stripe card fields run on the desk screen, so card data never reaches the backend; the charge, the kept card and the rollback rules are the same as US-06.
+- **Cash payment:** no Stripe call; the agent's cash payment is posted to the folio as a `CASH` payment (debit cash, credit guest receivable, US-15) in the same transaction as the reservation.
+- **Next step:** for a walk-in, the response returns the reservation id and the front end opens the check-in screen (US-12, US-13). If the local time is before 4:00 PM, the dashboard flag "early check-in approval needed" applies (US-10, US-12).
+- **Permission:** `FRONT_DESK_WORK` (Front Desk Agent or GM).
 
 ---
 
-## 2. ER Diagram (PostgreSQL persistence)
+## 2. ER Diagram
 
 ```mermaid
 erDiagram
-    STAFF_MEMBER ||--o{ RESERVATION : "creates (walk-in)"
-    PROPERTY ||--o{ RESERVATION : "receives"
+    RESERVATION ||--|| FOLIO : "has"
+    FOLIO ||--o{ LEDGER_ENTRY : "contains"
+    RESERVATION ||--o| TERMS_ACCEPTANCE : "evidence"
+    STAFF_USER ||--o{ RESERVATION : "creates at desk"
 
     RESERVATION {
-        uuid id PK "full model in US-06"
-        uuid property_id FK
-        varchar channel "WALK_IN"
-        uuid created_by_staff_id FK "nullable, set for walk-ins"
-        varchar payment_method_token "nullable for walk-ins, PENDING"
+        uuid id PK "US-06"
+        uuid property_id FK "agent's property"
+        varchar channel "WALK_IN or PHONE"
+        varchar status "WALK_IN CONFIRMED, PHONE UNCONFIRMED"
+        date check_in_date "today for WALK_IN"
+        varchar stripe_payment_method_id "null for cash payers"
+        uuid created_by_staff_id FK
     }
-    STAFF_MEMBER {
-        uuid id PK "partial: US-01"
+    LEDGER_ENTRY {
+        uuid id PK "US-15"
+        uuid folio_id FK
+        varchar entry_type "CASH or STRIPE_CARD payment"
+        numeric amount
+        char currency
+        uuid posted_by FK
     }
-    PROPERTY {
-        uuid id PK "partial"
+    TERMS_ACCEPTANCE {
+        uuid id PK "US-05"
+        varchar channel "FRONT_DESK"
+        uuid recorded_by_staff_id FK
+    }
+    FOLIO {
+        uuid id PK "US-15"
+    }
+    STAFF_USER {
+        uuid id PK "US-01"
     }
 ```
-
-### Design notes
-- **No new table.** A walk-in reuses `RESERVATION`, `RESERVATION_NIGHT`, `RESERVATION_TAX_LINE` and `ROOM_INVENTORY` from US-06.
-- **New column:** `created_by_staff_id` is added to `RESERVATION`, for traceability of desk sales.
-- **`CHECK` constraint:** `payment_method_token` may be null only when `channel = 'WALK_IN'`. Direct bookings always carry a token (US-06).
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Walk-in reservation — Scenarios 1 and 2
+### 3.1 Walk-in by card or cash, and phone booking — Scenarios 1 to 4
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Agent as Front Desk Agent
-    participant Form as WalkInReservationForm
-    participant Avail as CheckAvailabilityUseCase (US-03)
-    participant View as StaffReservationsView<br/>POST /api/v1/properties/{id}/reservations
-    participant UC as CreateWalkInReservationUseCase
-    participant Book as BookingService (US-06)
+    actor FDA as Front Desk Agent
+    participant Form as WalkInForm
+    participant View as DeskBookingView
+    participant UC as CreateDeskBookingUseCase
+    participant Inv as InventoryRepository
+    participant Pay as PaymentGateway
+    participant Folio as FolioService
 
-    Agent->>Form: Enter stay dates
-    Form->>Avail: GET availability for the dates
-    alt No availability (Scenario 2)
-        Avail-->>Form: []
-        Form-->>Agent: No rooms available for these dates
-    else Rooms available
-        Avail-->>Form: available room types with totals
-        Agent->>Form: Select room type, enter guest data, Ctrl+Enter
-        Form->>View: POST walk-in reservation
-        View->>UC: execute(command)
-        UC->>Book: book(request, channel = WALK_IN)
-        alt Room taken meanwhile
-            Book-->>UC: raise NoAvailabilityError
-            UC-->>View: error
-            View-->>Form: 409 Conflict
-            Form-->>Agent: Room no longer available
-        else Booked (Scenario 1)
-            Book-->>UC: Reservation with localized taxes
-            UC->>UC: commit
-            UC-->>View: ReservationConfirmation
-            View-->>Form: 201 Created
-            Form-->>Agent: Reservation created, ready for check-in (US-12)
+    FDA->>Form: guest data, T&C accepted for the guest, room type, payment
+    Form->>View: POST (Ctrl+Enter)
+    View->>UC: execute(staff, cmd)
+    UC->>Inv: reserve each night (version check)
+    alt no availability
+        View-->>FDA: 409 no rooms available
+    else reserved
+        alt walk-in paid in cash
+            UC->>Folio: post CASH payment (full stay)
+            UC->>UC: reservation WALK_IN, CONFIRMED
+            View-->>FDA: 201, continue to check-in
+        else walk-in paid by card
+            UC->>Pay: charge(full stay, idempotency key)
+            UC->>UC: reservation WALK_IN, CONFIRMED, STRIPE_CARD payment
+            View-->>FDA: 201, continue to check-in
+        else phone booking, future dates
+            UC->>Pay: charge(full stay, idempotency key)
+            UC->>UC: reservation PHONE, UNCONFIRMED (as US-06)
+            View-->>FDA: 201, waiting for confirmation
         end
     end
 ```
 
-### 3.2 Keyboard-only operation — Scenario 3
+### 3.2 Domain events
 
-```mermaid
-flowchart LR
-    A[Focus: check-in date] -- Tab --> B[Check-out date]
-    B -- Tab --> C[Room type list]
-    C -- "Arrow keys + Enter" --> D[Guest name]
-    D -- Tab --> E[Guest contact fields]
-    E -- Tab --> F[Guest language EN/FR]
-    F -- Tab --> G[Payment / deposit fields, PENDING]
-    G -- "Ctrl+Enter" --> H[Submit reservation]
-    H --> I{Result}
-    I -- 201 --> J[Focus moves to check-in action]
-    I -- "409 / 422" --> K[Focus moves to the first field with an error]
-```
-
-### 3.3 Domain events
-
-| Event | Emitted by | When | Payload | Consumers |
-|---|---|---|---|---|
-| `ReservationCreated` | `BookingService` (US-06) | Walk-in reservation saved (`channel = WALK_IN`) | see US-06 | Folio creation (US-15); confirmation email to walk-ins is PENDING |
+| Event | Raised when | Consumers |
+|---|---|---|
+| `ReservationCreated` (channel `WALK_IN` or `PHONE`) | Desk booking committed | Front desk dashboard (US-10); "booking received" email for phone bookings (US-06) |
+| `PaymentReceived` | Card charge or cash posted | Folio (US-15) |

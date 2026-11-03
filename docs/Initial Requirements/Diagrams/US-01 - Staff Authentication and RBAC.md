@@ -1,350 +1,384 @@
 # US-01 — Staff Authentication and Role-Based Access: Diagrams
 
-> Sources: `US-01-staff-authentication-and-role-based-access.md`, `docs/Business Modeling/Business Modeling.md`, `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
+> Source: `US-01-staff-authentication-and-role-based-access.md`. Every element below traces to a rule of that story.
+
+## Business rules reflected
+
+| Rule (US-01) | Where it appears |
+|---|---|
+| Roles: Front Desk Agent, General Manager/Owner, Housekeeper | `Role` enum, `STAFF_USER.role` |
+| Head Housekeeper is a privilege granted by the GM, not a role | `StaffUser.is_head_housekeeper`, `GrantHeadHousekeeperUseCase` |
+| Night Audit is a system process, not a role | No role or account for it |
+| Login with a unique, case-insensitive email | `EmailAddress` value object, `STAFF_USER.email` (`citext`, unique) |
+| Password ≥ 12 characters, common and leaked passwords rejected | `PasswordPolicy`, `BreachedPasswordChecker` port |
+| 10 consecutive failures → 15-minute lockout; GM can unlock; success resets the counter | `LoginAttemptPolicy`, `UnlockAccountUseCase`, sequence 3.1 |
+| Session expires 12 hours after login, regardless of activity | `StaffSession.expires_at`, sequence 3.3 |
+| GM creates, edits, deactivates accounts; temporary password changed at first login | `CreateStaffAccountUseCase`, `must_change_password`, sequence 3.2 |
+| Inactive staff cannot log in | `StaffUser.can_log_in()` |
+| One property per staff member; GM has access to all | `STAFF_USER.property_id` (null for GM), `PropertyScope` |
+| Permission matrix per role, editable by the GM (default matrix in US-01) | `ROLE_PERMISSION`, `UpdatePermissionMatrixUseCase` |
+| Housekeepers can never receive financial access | `PermissionMatrix.FINANCIAL` guard |
+| GM cannot remove their own settings and permissions access | `PermissionMatrix.LOCKED_FOR_GM` guard |
+| Only the GM performs the age-policy override | `Permission.AGE_OVERRIDE` locked to GM |
 
 ---
 
 ## 1. Class Diagram (Clean Architecture)
-
-Dependencies point inward: Interface → Application → Domain. Infrastructure implements the Application ports.
 
 ```mermaid
 classDiagram
     direction LR
 
     namespace Domain {
-        class StaffMember {
-            <<Entity / Aggregate Root>>
-            -StaffMemberId id
-            -LoginIdentifier login_identifier
-            -PasswordHash password_hash
-            -Role role
-            -bool is_active
-            +can_authenticate() bool
-            +has_permission(permission: Permission) bool
-        }
-        class StaffMemberId {
-            <<Value Object>>
-            +UUID value
-        }
-        class LoginIdentifier {
-            <<Value Object>>
-            +str value
-            %% PENDING: email, username or employee ID
-        }
-        class PasswordHash {
-            <<Value Object>>
-            +str value
-        }
         class Role {
             <<Enumeration>>
             FRONT_DESK_AGENT
             GENERAL_MANAGER
             HOUSEKEEPER
-            HEAD_HOUSEKEEPER
-            NIGHT_AUDITOR
         }
         class Permission {
             <<Enumeration>>
-            FINANCIAL_DATA_ACCESS
-            AGE_POLICY_OVERRIDE
-            %% PENDING: complete permission matrix
+            FRONT_DESK_WORK
+            HOUSEKEEPING_BOARD
+            HEAD_HOUSEKEEPER_ACTIONS
+            GUEST_PROFILES
+            NIGHT_AUDIT_REPORT
+            FINANCIAL_REPORTS
+            AGE_OVERRIDE
+            SETTINGS
         }
-        class RolePermissionPolicy {
-            <<Domain Service>>
-            +permissions_for(role: Role) set~Permission~
-            +is_allowed(role: Role, permission: Permission) bool
+        class EmailAddress {
+            <<Value Object>>
+            +str normalized
+            +from_raw(raw) EmailAddress
         }
-        class StaffAuthenticated {
-            <<Domain Event>>
-            +StaffMemberId staff_member_id
+        class StaffUser {
+            <<Aggregate Root>>
+            +StaffId id
+            +EmailAddress email
             +Role role
-            +datetime occurred_at_utc
+            +PropertyId property_id
+            +bool is_head_housekeeper
+            +bool is_active
+            +bool must_change_password
+            +int failed_login_count
+            +datetime locked_until
+            +can_log_in(now) bool
+            +register_failed_login(now, policy) None
+            +register_successful_login() None
+            +unlock() None
+            +change_password(hash) None
         }
-        class AuthenticationFailed {
-            <<Domain Event>>
-            +str attempted_identifier
-            +datetime occurred_at_utc
+        class StaffSession {
+            <<Entity>>
+            +SessionId id
+            +StaffId staff_id
+            +datetime created_at
+            +datetime expires_at
+            +is_expired(now) bool
         }
-        class AccessDenied {
-            <<Domain Event>>
-            +StaffMemberId staff_member_id
-            +Permission permission
-            +datetime occurred_at_utc
+        class PermissionMatrix {
+            <<Aggregate Root>>
+            +dict grants
+            +FINANCIAL set~Permission~
+            +LOCKED_FOR_GM set~Permission~
+            +allows(user, permission) bool
+            +set_grant(role, permission, granted) None
         }
-        class InvalidCredentialsError {
-            <<Domain Exception>>
+        class PasswordPolicy {
+            <<Domain Service>>
+            +MIN_LENGTH = 12
+            +validate(plain, checker) None
         }
-        class PermissionDeniedError {
-            <<Domain Exception>>
+        class LoginAttemptPolicy {
+            <<Value Object>>
+            +MAX_FAILURES = 10
+            +LOCK_MINUTES = 15
+        }
+        class SessionPolicy {
+            <<Value Object>>
+            +DURATION_HOURS = 12
+        }
+        class StaffRepository {
+            <<Port>>
+            +by_email(email) StaffUser
+            +get(id) StaffUser
+            +save(user) None
+        }
+        class PermissionMatrixRepository {
+            <<Port>>
+            +load() PermissionMatrix
+            +save(matrix) None
         }
     }
 
     namespace Application {
-        class AuthenticateStaffUseCase {
-            <<Use Case>>
-            +execute(command: AuthenticateStaffCommand) AuthenticationResult
+        class LoginUseCase {
+            +execute(email, password) LoginResult
         }
-        class AuthorizeStaffActionUseCase {
-            <<Use Case>>
-            +execute(staff_member_id: StaffMemberId, permission: Permission) None
+        class ChangePasswordUseCase {
+            +execute(staff_id, current, new) None
         }
-        class AuthenticateStaffCommand {
-            <<DTO>>
-            +str login_identifier
-            +str password
+        class CreateStaffAccountUseCase {
+            +execute(cmd) TemporaryCredentials
         }
-        class AuthenticationResult {
-            <<DTO>>
-            +str access_token
-            +Role role
-            +str home_screen
+        class UpdateStaffAccountUseCase {
+            +execute(cmd) None
         }
-        class StaffMemberRepository {
-            <<Port>>
-            +find_by_login_identifier(identifier: LoginIdentifier) StaffMember | None
-            +get_by_id(staff_member_id: StaffMemberId) StaffMember
+        class DeactivateStaffAccountUseCase {
+            +execute(staff_id) None
+        }
+        class UnlockAccountUseCase {
+            +execute(staff_id) None
+        }
+        class GrantHeadHousekeeperUseCase {
+            +execute(staff_id, granted) None
+        }
+        class UpdatePermissionMatrixUseCase {
+            +execute(actor, role, permission, granted) None
+        }
+        class AuthorizeRequest {
+            <<Application Service>>
+            +check(session_id, permission, property_id) StaffUser
         }
         class PasswordHasher {
             <<Port>>
-            +verify(raw_password: str, password_hash: PasswordHash) bool
-            +verify_dummy(raw_password: str) None
         }
-        class TokenService {
+        class BreachedPasswordChecker {
             <<Port>>
-            +issue(staff_member: StaffMember) str
-            +resolve(token: str) StaffMemberId
+            +is_common_or_leaked(plain) bool
         }
-        class EventPublisher {
+        class SessionStore {
             <<Port>>
-            +publish(event: DomainEvent) None
         }
         class Clock {
             <<Port>>
-            +now_utc() datetime
+            +now() datetime
+        }
+        class AuditLog {
+            <<Port>>
+            +record(actor, action, target, details) None
         }
     }
 
     namespace Infrastructure {
-        class DjangoStaffMemberRepository {
-            <<Adapter>>
-        }
-        class DjangoPasswordHasher {
-            <<Adapter>>
-        }
-        class TokenServiceAdapter {
-            <<Adapter>>
-            %% PENDING: session timeout
-        }
-        class InProcessEventPublisher {
-            <<Adapter>>
-        }
-        class SystemClock {
-            <<Adapter>>
-        }
+        class DjangoStaffRepository
+        class DjangoPermissionMatrixRepository
+        class Argon2PasswordHasher
+        class CommonPasswordListChecker
+        class DbSessionStore
+        class PostgresAuditLog
     }
 
     namespace Interface {
-        class AuthSessionsView {
-            <<REST Controller>>
-            +post(request) Response
+        class AuthViews {
+            <<REST>>
+            POST /api/v1/auth/login
+            POST /api/v1/auth/logout
+            POST /api/v1/auth/password
+        }
+        class StaffViews {
+            <<REST · GM>>
+            /api/v1/staff
+            POST /api/v1/staff/id/unlock
+        }
+        class PermissionViews {
+            <<REST · GM>>
+            /api/v1/permissions
         }
         class RequiresPermission {
             <<Authorization Guard>>
-            +check(request, permission: Permission) None
         }
     }
 
-    StaffMember *-- StaffMemberId
-    StaffMember *-- LoginIdentifier
-    StaffMember *-- PasswordHash
-    StaffMember --> Role
-    RolePermissionPolicy ..> Role
-    RolePermissionPolicy ..> Permission
-    StaffMember ..> RolePermissionPolicy : delegates permission check
-
-    AuthenticateStaffUseCase ..> AuthenticateStaffCommand
-    AuthenticateStaffUseCase ..> AuthenticationResult
-    AuthenticateStaffUseCase --> StaffMemberRepository
-    AuthenticateStaffUseCase --> PasswordHasher
-    AuthenticateStaffUseCase --> TokenService
-    AuthenticateStaffUseCase --> EventPublisher
-    AuthenticateStaffUseCase --> Clock
-    AuthenticateStaffUseCase ..> StaffAuthenticated : emits
-    AuthenticateStaffUseCase ..> AuthenticationFailed : emits
-    AuthenticateStaffUseCase ..> InvalidCredentialsError : raises
-
-    AuthorizeStaffActionUseCase --> StaffMemberRepository
-    AuthorizeStaffActionUseCase --> EventPublisher
-    AuthorizeStaffActionUseCase ..> AccessDenied : emits
-    AuthorizeStaffActionUseCase ..> PermissionDeniedError : raises
-
-    DjangoStaffMemberRepository ..|> StaffMemberRepository
-    DjangoPasswordHasher ..|> PasswordHasher
-    TokenServiceAdapter ..|> TokenService
-    InProcessEventPublisher ..|> EventPublisher
-    SystemClock ..|> Clock
-
-    AuthSessionsView --> AuthenticateStaffUseCase
-    RequiresPermission --> TokenService
-    RequiresPermission --> AuthorizeStaffActionUseCase
+    StaffUser --> Role
+    StaffUser --> EmailAddress
+    PermissionMatrix --> Permission
+    LoginUseCase --> StaffRepository
+    LoginUseCase --> PasswordHasher
+    LoginUseCase --> SessionStore
+    LoginUseCase --> LoginAttemptPolicy
+    LoginUseCase --> SessionPolicy
+    LoginUseCase --> Clock
+    ChangePasswordUseCase --> PasswordPolicy
+    PasswordPolicy ..> BreachedPasswordChecker
+    CreateStaffAccountUseCase --> StaffRepository
+    UnlockAccountUseCase --> AuditLog
+    UpdatePermissionMatrixUseCase --> PermissionMatrixRepository
+    AuthorizeRequest --> SessionStore
+    AuthorizeRequest --> PermissionMatrixRepository
+    DjangoStaffRepository ..|> StaffRepository
+    DjangoPermissionMatrixRepository ..|> PermissionMatrixRepository
+    Argon2PasswordHasher ..|> PasswordHasher
+    CommonPasswordListChecker ..|> BreachedPasswordChecker
+    DbSessionStore ..|> SessionStore
+    PostgresAuditLog ..|> AuditLog
+    AuthViews --> LoginUseCase
+    AuthViews --> ChangePasswordUseCase
+    StaffViews --> CreateStaffAccountUseCase
+    StaffViews --> UnlockAccountUseCase
+    PermissionViews --> UpdatePermissionMatrixUseCase
+    RequiresPermission --> AuthorizeRequest
 ```
 
 ### Design notes
-- **One role per staff member**, following the personas of the business document. PENDING: whether Head Housekeeper is a separate role or a permission granted to a Housekeeper, which may turn this into a one-to-many relationship.
-- **Known permissions only:** `FINANCIAL_DATA_ACCESS` (folios, payments, rates, reports — denied to Housekeeper and Head Housekeeper) and `AGE_POLICY_OVERRIDE` (management only, US-17). The rest of the matrix is PENDING.
-- **`verify_dummy`** runs a hash check when the identifier does not exist, so response time does not reveal whether an identifier is registered (Scenario 2: no field is identified as incorrect).
-- **`InProcessEventPublisher`** keeps the domain independent of the broker. RabbitMQ can replace the adapter later without touching the domain or use cases.
-- **`Clock`** is a port so that timestamps are always UTC and tests are deterministic.
+- **`AuthorizeRequest` checks three things on every request:** the session is not expired (12 hours from login), the role has the permission in the matrix, and the property is in the user's scope (own property, or any property for the GM).
+- **Housekeeper financial access:** `PermissionMatrix.set_grant()` rejects granting any permission in `FINANCIAL` to `HOUSEKEEPER`. `FINANCIAL` holds the permissions that expose folios, payments, rates or reports (Scenario 3): `FRONT_DESK_WORK`, `NIGHT_AUDIT_REPORT`, `FINANCIAL_REPORTS` and `SETTINGS`.
+- **GM self-protection:** `set_grant()` rejects removing `SETTINGS` from `GENERAL_MANAGER`. `AGE_OVERRIDE` can only be granted to `GENERAL_MANAGER`.
+- **Head Housekeeper:** `HEAD_HOUSEKEEPER_ACTIONS` is allowed to a Housekeeper only when `is_head_housekeeper` is true.
+- **Generic error:** `LoginUseCase` returns the same error for an unknown email and a wrong password (Scenario 2). A locked account is rejected even with the right password.
+- **Temporary password:** while `must_change_password` is true, `AuthorizeRequest` only allows the change-password endpoint (Scenario 5).
 
 ---
 
-## 2. ER Diagram (PostgreSQL persistence)
+## 2. ER Diagram
 
 ```mermaid
 erDiagram
-    ROLE ||--o{ STAFF_MEMBER : "is assigned to"
-    ROLE ||--o{ ROLE_PERMISSION : grants
-    PERMISSION ||--o{ ROLE_PERMISSION : "is granted by"
+    PROPERTY ||--o{ STAFF_USER : "employs"
+    STAFF_USER ||--o{ STAFF_SESSION : "opens"
+    STAFF_USER ||--o{ AUDIT_LOG : "acts in"
 
-    STAFF_MEMBER {
+    STAFF_USER {
         uuid id PK
-        varchar login_identifier UK "PENDING: email, username or employee ID"
-        varchar password_hash "never stored in plain text"
-        varchar role_code FK
+        citext email UK "case-insensitive"
+        varchar password_hash
+        varchar role "FRONT_DESK_AGENT, GENERAL_MANAGER, HOUSEKEEPER"
+        uuid property_id FK "null for GENERAL_MANAGER"
+        boolean is_head_housekeeper "Housekeeper only"
         boolean is_active
-        timestamptz created_at "UTC"
-        timestamptz updated_at "UTC"
+        boolean must_change_password
+        int failed_login_count
+        timestamptz locked_until "null when not locked"
+        timestamptz created_at
     }
-    ROLE {
-        varchar code PK "FRONT_DESK_AGENT, GENERAL_MANAGER, HOUSEKEEPER, HEAD_HOUSEKEEPER, NIGHT_AUDITOR"
-        varchar name
-    }
-    PERMISSION {
-        varchar code PK "FINANCIAL_DATA_ACCESS, AGE_POLICY_OVERRIDE, ..."
-        varchar description
+    STAFF_SESSION {
+        uuid id PK
+        uuid staff_id FK
+        timestamptz created_at
+        timestamptz expires_at "created_at + 12 h"
+        timestamptz revoked_at
     }
     ROLE_PERMISSION {
-        varchar role_code PK, FK
-        varchar permission_code PK, FK
+        varchar role PK
+        varchar permission PK
+        boolean granted
+        uuid updated_by FK
+        timestamptz updated_at
+    }
+    AUDIT_LOG {
+        uuid id PK
+        uuid actor_id FK "null for SYSTEM"
+        varchar actor_type "STAFF, GUEST, SYSTEM"
+        varchar action "e.g., ACCOUNT_UNLOCKED, PERMISSION_CHANGED"
+        varchar target_type
+        uuid target_id
+        jsonb details "never PII"
+        timestamptz created_at
+    }
+    PROPERTY {
+        uuid id PK "US-02"
     }
 ```
 
 ### Design notes
-- `ROLE_PERMISSION` holds the permission matrix as data, so completing it (PENDING) needs no schema change.
-- All timestamps are `timestamptz` and stored in UTC (Business Modeling, Section 4).
-- **Not modelled until defined:**
-  - staff ↔ property access (US-03): would add a `STAFF_PROPERTY_ACCESS` table;
-  - lockout after failed attempts: would add attempt counters or an attempt table;
-  - MFA: would add a factor table;
-  - audit trail of authentication events: would add an `AUTHENTICATION_EVENT` table.
+- `ROLE_PERMISSION` is seeded with the default matrix of US-01 and edited by the GM.
+- `CHECK (role <> 'GENERAL_MANAGER' OR property_id IS NULL)` and `CHECK (role = 'GENERAL_MANAGER' OR property_id IS NOT NULL)`.
+- `CHECK (is_head_housekeeper = false OR role = 'HOUSEKEEPER')`.
+- `AUDIT_LOG` is the shared audit table used by the other stories.
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Login — Scenarios 1 and 2
+### 3.1 Login, failed attempts and lockout — Scenarios 1, 2 and 4
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Staff as Staff Member
-    participant UI as React App (MantineUI)
-    participant API as AuthSessionsView<br/>POST /api/v1/auth/sessions
-    participant UC as AuthenticateStaffUseCase
-    participant Repo as StaffMemberRepository
+    actor Staff
+    participant View as AuthViews<br/>POST /api/v1/auth/login
+    participant UC as LoginUseCase
+    participant Repo as StaffRepository
     participant Hasher as PasswordHasher
-    participant Token as TokenService
-    participant Bus as EventPublisher
+    participant Sessions as SessionStore
 
-    Staff->>UI: Enter credentials and confirm
-    UI->>API: POST {login_identifier, password}
-    API->>UC: execute(AuthenticateStaffCommand)
-    UC->>Repo: find_by_login_identifier(identifier)
-    Repo-->>UC: StaffMember | None
-
-    alt Identifier not registered
-        UC->>Hasher: verify_dummy(password)
-        UC->>Bus: publish(AuthenticationFailed)
-        UC-->>API: raise InvalidCredentialsError
-        API-->>UI: 401 Unauthorized (generic message)
-        UI-->>Staff: Generic error, no field identified
-    else Incorrect password
-        UC->>Hasher: verify(password, password_hash)
-        Hasher-->>UC: false
-        UC->>Bus: publish(AuthenticationFailed)
-        UC-->>API: raise InvalidCredentialsError
-        API-->>UI: 401 Unauthorized (generic message)
-        UI-->>Staff: Generic error, no field identified
-    else Correct password, staff member inactive
-        UC->>Hasher: verify(password, password_hash)
-        Hasher-->>UC: true
-        UC->>UC: can_authenticate() = false
-        UC->>Bus: publish(AuthenticationFailed)
-        UC-->>API: raise InvalidCredentialsError
-        API-->>UI: 401 Unauthorized (generic message)
-        UI-->>Staff: Access denied
-    else Correct password, staff member active
-        UC->>Hasher: verify(password, password_hash)
-        Hasher-->>UC: true
-        UC->>UC: can_authenticate() = true
-        UC->>Token: issue(staff_member)
-        Token-->>UC: access_token
-        UC->>Bus: publish(StaffAuthenticated)
-        UC-->>API: AuthenticationResult(access_token, role, home_screen)
-        API-->>UI: 201 Created {access_token, role, home_screen}
-        UI-->>Staff: Redirect to the home screen of the role
+    Staff->>View: email and password
+    View->>UC: execute(email, password)
+    UC->>Repo: by_email(normalized email)
+    alt unknown email or inactive account
+        UC-->>View: InvalidCredentials
+        View-->>Staff: 401 generic error
+    else account locked (locked_until in the future)
+        UC-->>View: AccountLocked
+        View-->>Staff: 423 account locked, try later
+    else wrong password
+        UC->>Hasher: verify fails
+        UC->>Repo: save(failed_login_count + 1)
+        Note over UC,Repo: at the 10th consecutive failure<br/>locked_until = now + 15 min
+        UC-->>View: InvalidCredentials
+        View-->>Staff: 401 generic error
+    else right password
+        UC->>Repo: save(failed_login_count = 0)
+        UC->>Sessions: create(expires_at = now + 12 h)
+        UC-->>View: session and role home screen
+        View-->>Staff: 200 OK, redirect to role home
     end
-
-    Note over UC,Hasher: PENDING: lockout after failed attempts, MFA and password policy
-    Note over UI,UC: PENDING: whether an inactive staff member sees a specific message
 ```
 
-### 3.2 Authorization — Scenario 3 (Housekeeper and financial data)
+### 3.2 Account creation and first login — Scenario 5
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor HK as Housekeeper
-    participant UI as React App (MantineUI)
-    participant Guard as RequiresPermission
-    participant Token as TokenService
-    participant UC as AuthorizeStaffActionUseCase
-    participant Repo as StaffMemberRepository
-    participant Policy as RolePermissionPolicy
-    participant Bus as EventPublisher
-    participant API as Financial endpoint<br/>e.g. GET /api/v1/folios/{id}
+    actor GM as General Manager
+    actor Staff as New staff member
+    participant Views as StaffViews and AuthViews
+    participant NewAcc as CreateStaffAccountUseCase
+    participant Change as ChangePasswordUseCase
+    participant Policy as PasswordPolicy
 
-    HK->>UI: Open financial data (folio, payment, rate or report)
-    UI->>Guard: Request with access_token
-    Guard->>Token: resolve(access_token)
-
-    alt Token invalid or expired
-        Token-->>Guard: error
-        Guard-->>UI: 401 Unauthorized
-        UI-->>HK: Redirect to login
-    else Token valid
-        Token-->>Guard: staff_member_id
-        Guard->>UC: execute(staff_member_id, FINANCIAL_DATA_ACCESS)
-        UC->>Repo: get_by_id(staff_member_id)
-        Repo-->>UC: StaffMember(role = HOUSEKEEPER)
-        UC->>Policy: is_allowed(HOUSEKEEPER, FINANCIAL_DATA_ACCESS)
-        Policy-->>UC: false
-        UC->>Bus: publish(AccessDenied)
-        UC-->>Guard: raise PermissionDeniedError
-        Guard-->>UI: 403 Forbidden
-        UI-->>HK: Access denied
-        Note over Guard,API: The request never reaches the financial endpoint
+    GM->>Views: POST /api/v1/staff (email, role, property)
+    Views->>NewAcc: execute(cmd)
+    NewAcc-->>GM: 201 Created, temporary password
+    Staff->>Views: login with the temporary password
+    Views-->>Staff: 200 OK, must_change_password = true
+    Staff->>Views: GET any other screen
+    Views-->>Staff: 403 password change required
+    Staff->>Views: POST /api/v1/auth/password (new password)
+    Views->>Change: execute(staff_id, current, new)
+    Change->>Policy: validate (12+ characters, not common or leaked)
+    alt password rejected
+        Change-->>Staff: 422 password rejected
+    else password accepted
+        Change-->>Staff: 204, must_change_password = false
     end
 ```
 
-### 3.3 Domain events
+### 3.3 Authorization on every request — Scenarios 3 and 6
 
-| Event | Emitted by | When | Payload |
-|---|---|---|---|
-| `StaffAuthenticated` | `AuthenticateStaffUseCase` | Active staff member authenticated | `staff_member_id`, `role`, `occurred_at_utc` |
-| `AuthenticationFailed` | `AuthenticateStaffUseCase` | Unknown identifier, wrong password or inactive staff member | `attempted_identifier`, `occurred_at_utc` |
-| `AccessDenied` | `AuthorizeStaffActionUseCase` | Role lacks the required permission | `staff_member_id`, `permission`, `occurred_at_utc` |
+```mermaid
+flowchart TD
+    A[Request with session] --> B{Session expired?<br/>created 12 h ago or more}
+    B -- yes --> X1[401 session ended, log in again]
+    B -- no --> C{Account active and not locked?}
+    C -- no --> X2[401]
+    C -- yes --> D{must_change_password?}
+    D -- yes --> X3[403 only password change allowed]
+    D -- no --> E{Role has the permission?<br/>Head Housekeeper actions need the privilege}
+    E -- no --> X4[403 access denied]
+    E -- yes --> F{Property in scope?<br/>own property or GM}
+    F -- no --> X4
+    F -- yes --> G[Run the use case]
+```
 
-Consumers (e.g., lockout counter, audit log) are PENDING until the related rules are defined.
+### 3.4 Domain events
+
+| Event | Raised when | Consumers |
+|---|---|---|
+| `StaffLoggedIn` | Successful login | Audit log |
+| `StaffAccountLocked` | 10th consecutive failure | Audit log |
+| `StaffAccountUnlocked` | GM unlocks the account | Audit log |
+| `StaffAccountCreated` / `StaffAccountDeactivated` | GM manages accounts | Audit log, session revocation on deactivation |
+| `PermissionMatrixChanged` | GM edits the matrix | Audit log |
+| `HeadHousekeeperPrivilegeChanged` | GM grants or removes the privilege | Audit log |

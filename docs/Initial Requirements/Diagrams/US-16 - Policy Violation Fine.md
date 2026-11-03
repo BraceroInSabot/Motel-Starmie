@@ -1,8 +1,22 @@
 # US-16 — Policy Violation Fine: Diagrams
 
-> Sources: `US-16-policy-violation-fine.md`, `US-13-deposit-pre-authorization-hold.md`, `US-15-folio-ledger.md`, `docs/Business Modeling/Business Modeling.md` (Phase 4, Scenario B), `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
-> Data is scoped per **Property** (Business Modeling, Section 5) even where the story text does not mention it.
+> Source: `US-16-policy-violation-fine.md`. Related: US-01 (permissions), US-04 (not taxed), US-06 (card kept by Stripe), US-10 (open reports on the dashboard), US-13 (hold and cash deposit), US-15 (folio), US-17 (collection at check-out).
+
+## Business rules reflected
+
+| Rule (US-16) | Where it appears |
+|---|---|
+| Cannabis Cleaning Fine $250 CAD by default, editable by the GM | Seeded `FINE_TYPE` per property |
+| Other fine types and amounts defined by the GM on a settings page | `FineTypeViews` (`SETTINGS`) |
+| Fines per property; removal deactivates | `FINE_TYPE.property_id`, `is_active` |
+| Not taxed | `FINE` entry posts no tax lines |
+| Housekeeper reports with 1–5 photos (JPG, PNG, HEIC), ≤ 10 MB each | `EvidencePolicy`, `ReportViolationUseCase` |
+| Evidence kept until the GM deletes it | `DeleteEvidenceUseCase` (GM), `deleted_at` |
+| FDA reviews: posts the fine linked to the report, or dismisses with a reason; never fined twice | `ReviewViolationUseCase`, `UNIQUE (violation_report_id)` on the fine entry |
+| Guest emailed (fine name and amount, no photos) in their language | `Notifier.fine_posted()` |
+| Collected at check-out from the hold or cash deposit | US-17 step 1 |
+| Excess charged to the kept card; if declined, check-out blocked until paid at the desk | US-17 steps 2 and 4 |
+| GM can post a fine within 7 days after check-out, charged to the kept card, with an email | `PostLateFineUseCase` |
 
 ---
 
@@ -14,294 +28,243 @@ classDiagram
 
     namespace Domain {
         class FineType {
-            <<Entity · catalog>>
-            -FineTypeCode code
-            -dict~Language, str~ names
-            -Money amount
-            -bool | None taxable
+            <<Entity>>
+            +FineTypeId id
+            +PropertyId property_id
+            +LocalizedText name
+            +Money amount
+            +bool is_active
         }
-        class FineTypeCode {
-            <<Value Object>>
-            +str value
+        class ViolationReport {
+            <<Aggregate Root>>
+            +ReportId id
+            +PropertyId property_id
+            +RoomId room_id
+            +ReservationId reservation_id
+            +StaffId reported_by
+            +str description
+            +ReportStatus status
+            +list~EvidencePhoto~ photos
+            +mark_fined(staff) None
+            +dismiss(staff, reason) None
         }
-        class Folio {
-            <<Entity / Aggregate Root · US-15>>
-            +post_charge(charge: ChargeRequest) FolioTransaction
-            +post_payment(payment: PaymentRequest) FolioTransaction
-            +balance() Money
+        class ReportStatus {
+            <<Enumeration>>
+            OPEN
+            FINED
+            DISMISSED
         }
-        class DepositHold {
-            <<Entity / Aggregate Root · US-13>>
-            -Money amount
-            -Money captured_amount
-            +remaining() Money
-            +mark_captured(amount: Money) None
+        class EvidencePhoto {
+            <<Entity>>
+            +str file_key
+            +str mime_type
+            +int size_bytes
+            +datetime deleted_at
         }
-        class HoldSettlementPolicy {
+        class EvidencePolicy {
             <<Domain Service>>
-            +amount_to_capture(balance: Money, hold: DepositHold) Money
+            +MIN_PHOTOS = 1
+            +MAX_PHOTOS = 5
+            +MAX_BYTES = 10 MB
+            +ALLOWED = JPG, PNG, HEIC
+            +validate(files) None
         }
-        class PolicyViolationReport {
-            <<Entity · PENDING>>
-            -ReservationId reservation_id
-            -RoomId room_id
-            -FineTypeCode violation
-            -StaffMemberId reported_by
-            -datetime reported_at_utc
-        }
-        class FinePosted {
-            <<Domain Event>>
-            +ReservationId reservation_id
-            +FineTypeCode fine_type
-            +Money amount
-            +datetime occurred_at_utc
-        }
-        class DepositCaptured {
-            <<Domain Event>>
-            +ReservationId reservation_id
-            +Money amount
-            +datetime occurred_at_utc
-        }
-        class NoActiveHoldError {
-            <<Domain Exception>>
-        }
-        class BalanceExceedsHoldError {
-            <<Domain Exception · handling PENDING>>
+        class LateFinePolicy {
+            <<Domain Service>>
+            +WINDOW_DAYS = 7
+            +assert_within_window(checked_out_at, now) None
         }
     }
 
     namespace Application {
-        class PostFineUseCase {
-            <<Use Case>>
-            +execute(command: PostFineCommand) FolioTransactionId
+        class ReportViolationUseCase {
+            <<HOUSEKEEPING_BOARD>>
+            +execute(room_id, description, files, housekeeper) ViolationReport
         }
-        class SettleBalanceFromHoldUseCase {
-            <<Use Case>>
-            +execute(reservation_id: ReservationId) SettlementResult
+        class ReviewViolationUseCase {
+            <<FRONT_DESK_WORK>>
+            +post_fine(report_id, fine_type_id, agent) None
+            +dismiss(report_id, reason, agent) None
         }
-        class PostFineCommand {
-            <<DTO>>
-            +UUID reservation_id
-            +str fine_type_code
-            +UUID staff_member_id
-            +UUID | None violation_report_id
+        class PostLateFineUseCase {
+            <<GM>>
+            +execute(reservation_id, fine_type_id, gm) None
         }
-        class FineTypeRepository {
-            <<Port>>
-            +get(code: FineTypeCode) FineType
+        class ManageFineTypesUseCase {
+            <<SETTINGS · GM>>
         }
-        class FolioRepository {
-            <<Port · US-15>>
-            +get_by_reservation(reservation_id) Folio
-            +save(folio) None
+        class DeleteEvidenceUseCase {
+            <<GM>>
         }
-        class DepositHoldRepository {
-            <<Port · US-13>>
-            +get_active_for_reservation(reservation_id) DepositHold | None
-            +save(hold) None
+        class FolioService {
+            <<US-15>>
         }
         class PaymentGateway {
-            <<Port · US-13>>
-            +capture(authorization_id: str, amount: Money, idempotency_key: str) CaptureResult
-        }
-        class UnitOfWork {
             <<Port>>
-            +commit() None
+            +charge_off_session(customer, payment_method, amount, key) ChargeResult
         }
-        class EventPublisher {
+        class EvidenceStorage {
             <<Port>>
-            +publish(event: DomainEvent) None
         }
+        class Notifier {
+            <<Port>>
+            +fine_posted(guest, fine, language) None
+        }
+    }
+
+    namespace Infrastructure {
+        class FileSystemEvidenceStorage
+        class StripePaymentGateway
+        class EmailNotifier
     }
 
     namespace Interface {
-        class FolioFinesView {
-            <<REST Controller>>
-            +post(request, reservation_id) Response
+        class ViolationViews {
+            <<REST>>
+            POST /api/v1/rooms/id/violation-reports
+            POST /api/v1/violation-reports/id/fine
+            POST /api/v1/violation-reports/id/dismiss
+            POST /api/v1/reservations/id/late-fines
         }
-        class HoldSettlementView {
-            <<REST Controller>>
-            +post(request, reservation_id) Response
+        class FineTypeViews {
+            <<REST · SETTINGS>>
+            /api/v1/properties/id/fine-types
         }
     }
 
-    FineType *-- FineTypeCode
-    HoldSettlementPolicy ..> DepositHold
-    HoldSettlementPolicy ..> BalanceExceedsHoldError : signals
-    PostFineUseCase ..> FinePosted : emits
-    SettleBalanceFromHoldUseCase ..> DepositCaptured : emits
-
-    PostFineUseCase ..> PostFineCommand
-    PostFineUseCase --> FineTypeRepository
-    PostFineUseCase --> FolioRepository
-    PostFineUseCase --> UnitOfWork
-    PostFineUseCase --> EventPublisher
-    SettleBalanceFromHoldUseCase --> FolioRepository
-    SettleBalanceFromHoldUseCase --> DepositHoldRepository
-    SettleBalanceFromHoldUseCase --> HoldSettlementPolicy
-    SettleBalanceFromHoldUseCase --> PaymentGateway
-    SettleBalanceFromHoldUseCase --> UnitOfWork
-    SettleBalanceFromHoldUseCase --> EventPublisher
-    SettleBalanceFromHoldUseCase ..> NoActiveHoldError : raises
-
-    FolioFinesView --> PostFineUseCase
-    HoldSettlementView --> SettleBalanceFromHoldUseCase
+    ViolationReport --> ReportStatus
+    ViolationReport *-- EvidencePhoto
+    ReportViolationUseCase --> EvidencePolicy
+    ReportViolationUseCase --> EvidenceStorage
+    ReviewViolationUseCase --> FolioService
+    ReviewViolationUseCase --> Notifier
+    ReviewViolationUseCase ..> FineType
+    PostLateFineUseCase --> LateFinePolicy
+    PostLateFineUseCase --> FolioService
+    PostLateFineUseCase --> PaymentGateway
+    PostLateFineUseCase --> Notifier
+    DeleteEvidenceUseCase --> EvidenceStorage
+    FileSystemEvidenceStorage ..|> EvidenceStorage
+    StripePaymentGateway ..|> PaymentGateway
+    EmailNotifier ..|> Notifier
+    ViolationViews --> ReportViolationUseCase
+    ViolationViews --> ReviewViolationUseCase
+    ViolationViews --> PostLateFineUseCase
+    FineTypeViews --> ManageFineTypesUseCase
 ```
 
 ### Design notes
-- **Fines come from a catalog (`FineType`)**, not free text. The only defined fine is `CANNABIS_CLEANING` = $250.00 CAD, with EN/FR names for invoices. Other fine types (pets, damages) are PENDING and will be added as catalog data.
-- **Posting a fine (Scenario 1)** creates a `FINE` transaction in the folio (US-15): debit `GUEST_RECEIVABLE`, credit `FINE_REVENUE`. Whether fines are taxable is PENDING (`taxable` is nullable); if they are, `TAX_PAYABLE` lines are added like any charge.
-- **Settling from the hold (Scenario 2):**
-  - `HoldSettlementPolicy` returns the amount to capture: the outstanding balance, limited to the hold's remaining amount;
-  - the capture goes to the gateway with an idempotency key (US-13);
-  - on success, `PAYMENT_DEPOSIT` is posted to the folio (debit `DEPOSIT_CLEARING`, credit `GUEST_RECEIVABLE`) and the hold records the captured amount.
-- **Order of operations:** the gateway capture happens **before** the local commit. If the commit then fails, a retry repeats the capture with the same idempotency key, and the gateway returns the original result instead of capturing twice.
-- **PENDING:**
-  - how housekeeping reports a violation (`PolicyViolationReport` is drawn only as a placeholder);
-  - what happens when the balance exceeds the hold (`BalanceExceedsHoldError`);
-  - whether fines are taxable.
-- **Permission:** posting fines requires `FINANCIAL_DATA_ACCESS` (Front Desk Agent, US-01).
+- **Report:** the Housekeeper reports from the housekeeping board for a room; the system links the report to the reservation currently In-House in that room. The report appears on the front desk dashboard as an open violation report (US-10).
+- **Review:** only `OPEN` reports can be fined or dismissed. Posting a fine writes a `FINE` entry (debit guest receivable, credit fine revenue, no tax) with `violation_report_id`; the unique constraint makes a second fine impossible even under concurrency. After commit, the guest gets an email with the fine name and amount, without photos.
+- **Collection** is not done at posting time; it happens at check-out (US-17 steps 1 and 2).
+- **Late fine:** the GM picks a fine type for a `CHECKED_OUT` reservation whose check-out was within the last 7 days; the system posts the fine and charges it off-session to the card kept by Stripe, then posts `STRIPE_CARD`, and emails the guest. Cash and OTA guests without a kept card: not described by US-16.
+- **Evidence:** files are validated by type and size before storage; the GM can delete them (soft delete of the row, file removed from storage).
 
 ---
 
-## 2. ER Diagram (PostgreSQL persistence)
+## 2. ER Diagram
 
 ```mermaid
 erDiagram
-    FINE_TYPE ||--o{ FOLIO_TRANSACTION : "is charged as"
-    FOLIO ||--o{ FOLIO_TRANSACTION : "records"
-    RESERVATION ||--o{ DEPOSIT_HOLD : "is secured by"
-    DEPOSIT_HOLD ||--o{ DEPOSIT_CAPTURE : "is captured by"
-    RESERVATION ||--o{ POLICY_VIOLATION_REPORT : "may have"
+    PROPERTY ||--o{ FINE_TYPE : "defines"
+    PROPERTY ||--o{ VIOLATION_REPORT : "receives"
+    ROOM ||--o{ VIOLATION_REPORT : "location"
+    RESERVATION ||--o{ VIOLATION_REPORT : "stay"
+    VIOLATION_REPORT ||--|{ VIOLATION_PHOTO : "evidence"
+    VIOLATION_REPORT ||--o| LEDGER_ENTRY : "fined as"
+    FINE_TYPE ||--o{ LEDGER_ENTRY : "priced"
 
     FINE_TYPE {
-        varchar code PK "CANNABIS_CLEANING, others PENDING"
+        uuid id PK
+        uuid property_id FK
         varchar name_en
         varchar name_fr
-        numeric amount "numeric(12,2), 250.00"
+        numeric amount "Cannabis Cleaning default 250.00"
         char currency "CAD"
-        boolean taxable "nullable, PENDING"
         boolean is_active
     }
-    FOLIO_TRANSACTION {
-        uuid id PK "partial: US-15"
-        uuid folio_id FK
-        varchar transaction_type "FINE, PAYMENT_DEPOSIT"
-        varchar fine_type_code FK "nullable, set for FINE"
-    }
-    DEPOSIT_HOLD {
-        uuid id PK "partial: US-13"
-        uuid reservation_id FK
-        varchar gateway_authorization_id
-        numeric captured_amount "numeric(12,2)"
-    }
-    DEPOSIT_CAPTURE {
-        uuid id PK "gateway idempotency key"
-        uuid deposit_hold_id FK
-        numeric amount "numeric(12,2)"
-        char currency "CAD"
-        varchar gateway_capture_id "UNIQUE"
-        uuid folio_transaction_id FK "the PAYMENT_DEPOSIT posted"
-        timestamptz captured_at "UTC"
-    }
-    POLICY_VIOLATION_REPORT {
-        uuid id PK "PENDING: how violations are reported"
-        uuid reservation_id FK
+    VIOLATION_REPORT {
+        uuid id PK
+        uuid property_id FK
         uuid room_id FK
-        varchar fine_type_code FK
-        uuid reported_by_staff_id FK
-        timestamptz reported_at "UTC"
+        uuid reservation_id FK
+        uuid reported_by FK "Housekeeper"
+        text description
+        varchar status "OPEN, FINED, DISMISSED"
+        uuid reviewed_by FK "Front Desk Agent"
+        text dismiss_reason
+        timestamptz reported_at
+        timestamptz reviewed_at
     }
-    RESERVATION {
-        uuid id PK "partial: US-06"
+    VIOLATION_PHOTO {
+        uuid id PK
+        uuid report_id FK
+        varchar file_key
+        varchar mime_type "image/jpeg, image/png, image/heic"
+        int size_bytes "max 10 MB"
+        timestamptz deleted_at "GM deletion"
     }
-    FOLIO {
-        uuid id PK "partial: US-15"
+    LEDGER_ENTRY {
+        uuid id PK "US-15"
+        varchar entry_type "FINE"
+        uuid violation_report_id FK, UK "never fined twice"
+        uuid fine_type_id FK
+        numeric amount
     }
 ```
-
-### Design notes
-- **`DEPOSIT_CAPTURE`** keeps each capture with its gateway reference and the folio payment it produced, so captures can be reconciled with the gateway's records.
-- **Captured amount limit:** a check, or trigger, guarantees `DEPOSIT_HOLD.captured_amount` never exceeds `DEPOSIT_HOLD.amount`.
-- **`POLICY_VIOLATION_REPORT` is PENDING.** It exists only if housekeeping reports violations through the system.
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Posting the fine — Scenario 1
+### 3.1 Report, review and email — Scenarios 1 to 3
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor HK as Housekeeping
-    actor Agent as Front Desk Agent
-    participant View as FolioFinesView<br/>POST /api/v1/reservations/{id}/folio/fines
-    participant UC as PostFineUseCase
-    participant Cat as FineTypeRepository
-    participant Repo as FolioRepository
-    participant Bus as EventPublisher
+    actor HK as Housekeeper
+    actor FDA as Front Desk Agent
+    participant View as ViolationViews
+    participant Report as ReportViolationUseCase
+    participant Review as ReviewViolationUseCase
+    participant Folio as FolioService
+    participant Mail as Notifier
 
-    HK-->>Agent: Smoke reported in the room (reporting channel PENDING)
-    Agent->>View: POST {fine_type: CANNABIS_CLEANING}
-    View->>UC: execute(command)
-    UC->>Cat: get(CANNABIS_CLEANING)
-    Cat-->>UC: FineType (250.00 CAD, taxable PENDING)
-    UC->>Repo: get_by_reservation(reservation_id)
-    Repo-->>UC: Folio
-    UC->>UC: folio.post_charge(FINE 250.00 CAD)
-    UC->>Repo: save(folio)
-    UC->>Bus: publish(FinePosted)
-    UC-->>View: transaction id
-    View-->>Agent: 201 Created, balance now includes the fine
+    HK->>View: POST report (room, description, 1 to 5 photos)
+    View->>Report: execute(...)
+    Report-->>FDA: open violation report on the dashboard
+    FDA->>View: opens the report and its photos
+    alt post the fine
+        View->>Review: post_fine(report, fine type)
+        Review->>Folio: FINE entry linked to the report (not taxed)
+        Review->>Review: report FINED
+        Review-->>Mail: after commit: fine name and amount, guest language, no photos
+    else dismiss
+        View->>Review: dismiss(report, reason)
+        Review->>Review: report DISMISSED, no fine
+    end
 ```
 
-### 3.2 Settling the balance from the hold — Scenario 2
+### 3.2 Collection — Scenarios 4 to 6
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor Agent as Front Desk Agent
-    participant View as HoldSettlementView<br/>POST /api/v1/reservations/{id}/deposit-hold/captures
-    participant UC as SettleBalanceFromHoldUseCase
-    participant Holds as DepositHoldRepository
-    participant Folios as FolioRepository
-    participant Pol as HoldSettlementPolicy
-    participant GW as PaymentGateway
-    participant Bus as EventPublisher
-
-    Agent->>View: Settle balance from hold
-    View->>UC: execute(reservation_id)
-    UC->>Holds: get_active_for_reservation(reservation_id)
-    alt No active hold
-        Holds-->>UC: None
-        UC-->>View: raise NoActiveHoldError
-        View-->>Agent: 409 Conflict
-    else Active hold (250.00 CAD)
-        Holds-->>UC: DepositHold
-        UC->>Folios: get_by_reservation(reservation_id)
-        Folios-->>UC: Folio (balance 250.00 CAD)
-        UC->>Pol: amount_to_capture(balance, hold)
-        alt Balance within the hold
-            Pol-->>UC: 250.00 CAD
-            UC->>GW: capture(authorization_id, 250.00 CAD, idempotency_key)
-            GW-->>UC: capture_id
-            UC->>UC: hold.mark_captured(250.00) and folio.post_payment(DEPOSIT, 250.00)
-            UC->>Holds: save(hold)
-            UC->>Folios: save(folio)
-            UC->>Bus: publish(DepositCaptured)
-            UC-->>View: settled, balance 0.00
-            View-->>Agent: 200 OK, ready for check-out (US-17)
-        else Balance exceeds the hold
-            Pol-->>UC: BalanceExceedsHoldError
-            Note over UC,Agent: PENDING: handling when the balance owed exceeds the hold
-        end
-    end
+flowchart TD
+    A{When?} -- at check-out --> B["Unpaid fines captured from the hold<br/>or deducted from the cash deposit (US-17 step 1)"]
+    B --> C{Balance larger than the hold or deposit?}
+    C -- no --> D[Rest of the hold released or deposit returned]
+    C -- yes --> E[Rest charged to the card kept by Stripe]
+    E --> F{Charge declined?}
+    F -- no --> D
+    F -- yes --> G[Check-out blocked until the guest pays at the desk]
+    A -- "after check-out, within 7 days" --> H[GM posts the fine]
+    H --> I[Charged to the card kept by Stripe and guest emailed]
 ```
 
 ### 3.3 Domain events
 
-| Event | Emitted by | When | Payload | Consumers |
-|---|---|---|---|---|
-| `FinePosted` | `PostFineUseCase` | Fine charged to the folio | `reservation_id`, `fine_type`, `amount`, `occurred_at_utc` | Reports (US-22) |
-| `DepositCaptured` | `SettleBalanceFromHoldUseCase` | Funds captured from the hold | `reservation_id`, `amount`, `occurred_at_utc` | Check-out (US-17): no release needed when fully captured |
+| Event | Raised when | Consumers |
+|---|---|---|
+| `ViolationReported` | Housekeeper submits a report | Front desk dashboard (US-10) |
+| `FinePosted` | FDA posts a fine or GM posts a late fine | Guest email, folio balance (US-15) |
+| `ViolationReportDismissed` | FDA dismisses | Dashboard |
+| `EvidenceDeleted` | GM deletes photos | Audit log |

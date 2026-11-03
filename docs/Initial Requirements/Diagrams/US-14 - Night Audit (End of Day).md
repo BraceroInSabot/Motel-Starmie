@@ -1,8 +1,25 @@
 # US-14 — Night Audit (End of Day): Diagrams
 
-> Sources: `US-14-night-audit-end-of-day.md`, `US-04-localized-tax-calculation.md`, `US-15-folio-ledger.md`, `docs/Business Modeling/Business Modeling.md` (Personas, Phase 3, Sections 4 and 5), `docs/Tech Stack/Tools.md` (cron), `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
-> Data is scoped per **Property** (Business Modeling, Section 5): the Night Audit runs separately for each property.
+> Source: `US-14-night-audit-end-of-day.md`. Related: US-03 (nightly rate), US-04 (taxes), US-06 (payment as credit), US-15 (folio), US-22 (Night Audit report and exceptions list).
+
+## Business rules reflected
+
+| Rule (US-14) | Where it appears |
+|---|---|
+| Automated process, separate per property | `RunNightAuditUseCase(property_id)`, one run per property |
+| Fixed cutoff 2:00 AM local time | `NightAuditSchedule.CUTOFF = 02:00` |
+| The 2:00 AM run closes the previous local date | `business_date = local_today − 1 day` |
+| Posts room rate and taxes for the night of every In-House reservation | `NightlyPostingService` |
+| Each night charged once; repeated runs skip charged nights | `UNIQUE (reservation_id, stay_date)` on `NIGHT_CHARGE` |
+| Missed nights caught up at the next run | Posts every uncharged night up to the business date |
+| Booking payment stays as a credit; charges posted against it | Folio entries (US-15) |
+| Timezone-aware cron; UTC timestamps | `NightAuditScheduler` with `ZoneInfo` |
+| DST: spring forward runs at 3:00 AM; fall back runs once | `NightAuditSchedule.next_run()` and the unique run key |
+| One reservation fails → exceptions list, run continues | `NIGHT_AUDIT_EXCEPTION` |
+| Whole run fails → retry every 15 minutes, 3 times, then email the developer | `RetryPolicy`, `DeveloperAlert` |
+| Errors in application logs; every run stored in the database | `NIGHT_AUDIT_RUN`, logger |
+| Developer email in an environment variable, default guibragon@gmail.com | `NIGHT_AUDIT_ALERT_EMAIL` setting |
+| No-show processing not part of it | Handled by US-11 |
 
 ---
 
@@ -13,257 +30,210 @@ classDiagram
     direction LR
 
     namespace Domain {
-        class NightAuditRun {
-            <<Entity / Aggregate Root>>
-            -NightAuditRunId id
-            -PropertyId property_id
-            -date business_date
-            -NightAuditStatus status
-            -datetime started_at_utc
-            -datetime | None finished_at_utc
-            -int posted_reservations
-            +start(property_id, business_date, at_utc)$ NightAuditRun
-            +complete(posted: int, at_utc: datetime) None
-            +fail(reason: str, at_utc: datetime) None
-        }
-        class NightAuditStatus {
-            <<Enumeration>>
-            RUNNING
-            COMPLETED
-            FAILED
-        }
         class NightAuditSchedule {
             <<Domain Service>>
-            +is_due(property: Property, cutoff_local: time, now_utc: datetime) bool
-            +business_date_for(property: Property, now_utc: datetime) date
+            +CUTOFF = 02:00
+            +next_run(timezone, after_utc) datetime
+            +business_date(run_local_date) date
         }
-        class NightAuditCompleted {
-            <<Domain Event>>
-            +NightAuditRunId run_id
+        class NightAuditRun {
+            <<Aggregate Root>>
+            +RunId id
             +PropertyId property_id
             +date business_date
-            +int posted_reservations
-            +datetime occurred_at_utc
+            +RunStatus status
+            +int attempt
+            +list~AuditException~ exceptions
+            +start() None
+            +finish() None
+            +fail(error) None
         }
-        class NightAuditFailed {
-            <<Domain Event>>
-            +NightAuditRunId run_id
-            +str reason
-            +datetime occurred_at_utc
+        class RunStatus {
+            <<Enumeration>>
+            RUNNING
+            SUCCEEDED
+            SUCCEEDED_WITH_EXCEPTIONS
+            FAILED
         }
-        class NightAuditAlreadyRunError {
-            <<Domain Exception>>
+        class AuditException {
+            <<Value Object>>
+            +ReservationId reservation_id
+            +str error
+        }
+        class NightlyPostingService {
+            <<Domain Service>>
+            +nights_to_charge(reservation, business_date, charged) list~date~
+        }
+        class RetryPolicy {
+            <<Value Object>>
+            +INTERVAL_MINUTES = 15
+            +MAX_RETRIES = 3
         }
     }
 
     namespace Application {
-        class NightAuditSchedulerJob {
-            <<Scheduled Job · cron>>
-            +tick() None
-        }
         class RunNightAuditUseCase {
-            <<Use Case>>
-            +execute(property_id: PropertyId, business_date: date) NightAuditRunId
+            +execute(property_id, business_date) NightAuditRun
         }
-        class PostRoomChargeService {
-            <<Application Service · US-15>>
-            +post_nightly_charge(reservation: Reservation, business_date: date, run_id: NightAuditRunId) None
-        }
-        class NightAuditRunRepository {
+        class InHouseReader {
             <<Port>>
-            +add(run: NightAuditRun) None
-            +save(run: NightAuditRun) None
-            +exists(property_id: PropertyId, business_date: date) bool
+            +in_house(property_id) list~Reservation~
         }
-        class ReservationRepository {
-            <<Port · US-06>>
-            +list_in_house(property_id: PropertyId) list~Reservation~
-        }
-        class PropertyRepository {
+        class NightChargeRepository {
             <<Port>>
-            +list_all() list~Property~
+            +charged_nights(reservation_id) set~date~
         }
-        class NightAuditSettings {
-            <<Port · cutoff PENDING>>
-            +cutoff_local(property_id: PropertyId) time
+        class TaxEngine {
+            <<US-04>>
         }
-        class RateProvider {
-            <<Port · rate structure US-03>>
-            +nightly_rate(reservation: Reservation, business_date: date) Money
+        class NightlyRatePolicy {
+            <<US-03>>
         }
-        class TaxCalculator {
-            <<Port · US-04>>
-            +calculate(property_id, base: Money, on_date: date) list~TaxLine~
+        class FolioService {
+            <<US-15>>
+            +post_room_night(folio, night, rate, taxes, run_id) None
         }
-        class Clock {
+        class RunRepository {
             <<Port>>
-            +now_utc() datetime
         }
-        class UnitOfWork {
+        class DeveloperAlert {
             <<Port>>
-            +commit() None
-        }
-        class EventPublisher {
-            <<Port>>
-            +publish(event: DomainEvent) None
+            +send(subject, details) None
         }
     }
 
     namespace Infrastructure {
-        class RunNightAuditCommand {
-            <<Django management command · invoked by cron>>
-            +handle() None
+        class NightAuditScheduler {
+            <<cron · timezone-aware>>
         }
-        class DjangoNightAuditRunRepository {
-            <<Adapter>>
+        class EmailDeveloperAlert {
+            <<env NIGHT_AUDIT_ALERT_EMAIL>>
         }
+        class DjangoRunRepository
     }
 
-    NightAuditRun --> NightAuditStatus
-    NightAuditRun ..> NightAuditCompleted : records
-    NightAuditRun ..> NightAuditFailed : records
-
-    NightAuditSchedulerJob --> PropertyRepository
-    NightAuditSchedulerJob --> NightAuditSettings
-    NightAuditSchedulerJob --> NightAuditSchedule
-    NightAuditSchedulerJob --> NightAuditRunRepository
-    NightAuditSchedulerJob --> Clock
-    NightAuditSchedulerJob --> RunNightAuditUseCase
-    RunNightAuditUseCase --> NightAuditRunRepository
-    RunNightAuditUseCase --> ReservationRepository
-    RunNightAuditUseCase --> PostRoomChargeService
-    RunNightAuditUseCase --> UnitOfWork
-    RunNightAuditUseCase --> EventPublisher
-    RunNightAuditUseCase ..> NightAuditAlreadyRunError : raises
-    PostRoomChargeService --> RateProvider
-    PostRoomChargeService --> TaxCalculator
-
-    RunNightAuditCommand --> NightAuditSchedulerJob
-    DjangoNightAuditRunRepository ..|> NightAuditRunRepository
+    NightAuditRun --> RunStatus
+    NightAuditRun *-- AuditException
+    RunNightAuditUseCase --> InHouseReader
+    RunNightAuditUseCase --> NightChargeRepository
+    RunNightAuditUseCase --> NightlyPostingService
+    RunNightAuditUseCase --> NightlyRatePolicy
+    RunNightAuditUseCase --> TaxEngine
+    RunNightAuditUseCase --> FolioService
+    RunNightAuditUseCase --> RunRepository
+    NightAuditScheduler --> NightAuditSchedule
+    NightAuditScheduler --> RunNightAuditUseCase
+    NightAuditScheduler --> RetryPolicy
+    NightAuditScheduler --> DeveloperAlert
+    EmailDeveloperAlert ..|> DeveloperAlert
+    DjangoRunRepository ..|> RunRepository
 ```
 
 ### Design notes
-- **Timezone-aware scheduling (Scenario 2):**
-  - cron runs the Django command `run_night_audit` every few minutes, in UTC;
-  - for each property, `NightAuditSchedule.is_due` converts "now" to the property's IANA timezone (`America/Halifax`) and returns true once local time is past the cutoff and no run exists yet for that business date;
-  - cron itself never needs to know about daylight saving time.
-- **DST edge case in Halifax:** the clocks change **at 2:00 AM local**, the example cutoff in the business document.
-  - **Spring forward:** 2:00 to 2:59 does not exist, so the first tick after the jump (3:00 ADT) is "past the cutoff" and the audit runs once.
-  - **Fall back:** 1:00 to 1:59 happens twice, and the existing run for that business date prevents a second run.
-- **No double posting:** `NIGHT_AUDIT_RUN` is unique per `(property_id, business_date)`, and every room charge carries `(reservation_id, business_date)` as a unique posting key in the folio (US-15). A retry or a second scheduler instance cannot post the same night twice. Failure and re-run *behaviour* (e.g., resuming a failed run) is PENDING.
-- **Business date (to confirm):** with a cutoff after midnight (e.g., 2:00 AM on Nov 2), the audit closes the **previous** local date (Nov 1), the night the guests stayed.
-- **Posting:** `PostRoomChargeService` posts the nightly rate (rate structure from US-03) and the daily taxes (US-04) to each In-House reservation's folio (US-15).
-- **PENDING:**
-  - the exact cutoff time (`NightAuditSettings`);
-  - no-show processing during the audit;
-  - behaviour after a failure.
+- **Schedule:** the scheduler wakes every minute and, for each property, computes the next 2:00 AM local run with `ZoneInfo("America/Halifax")`. On the spring-forward day 2:00 AM does not exist, so the first valid moment is 3:00 AM. On the fall-back day 2:00 AM happens once in the fold-0 interpretation; the unique key `(property_id, business_date)` guarantees a single run.
+- **Per reservation (own savepoint):** `nights_to_charge` returns every night from check-in up to and including the business date that has no `NIGHT_CHARGE` yet (catch-up, Scenario 4; no double charge, Scenario 3). Each night posts one `ROOM_NIGHT` charge and one charge per tax line (levy, HST). A failure rolls back that reservation only and adds an exception (Scenario 5).
+- **Run failure:** if the whole run fails (e.g., database unavailable), the run is marked `FAILED`, the error is logged, and the scheduler retries every 15 minutes up to 3 times; after the third failed retry, `DeveloperAlert` emails the address in `NIGHT_AUDIT_ALERT_EMAIL` (default guibragon@gmail.com).
+- **Credit balance:** the booking payment (US-06) or OTA prepaid amount (US-07) is already a credit, so nightly charges bring the balance toward zero.
 
 ---
 
-## 2. ER Diagram (PostgreSQL persistence)
+## 2. ER Diagram
 
 ```mermaid
 erDiagram
-    PROPERTY ||--o{ NIGHT_AUDIT_RUN : "runs"
-    NIGHT_AUDIT_RUN ||--o{ FOLIO_TRANSACTION : "posts"
-    FOLIO ||--o{ FOLIO_TRANSACTION : "records"
+    PROPERTY ||--o{ NIGHT_AUDIT_RUN : "audited by"
+    NIGHT_AUDIT_RUN ||--o{ NIGHT_AUDIT_EXCEPTION : "lists"
+    NIGHT_AUDIT_RUN ||--o{ NIGHT_CHARGE : "posts"
+    RESERVATION ||--o{ NIGHT_CHARGE : "charged for"
+    NIGHT_CHARGE ||--|{ LEDGER_ENTRY : "room night and taxes"
 
-    PROPERTY {
-        uuid id PK "partial"
-        varchar timezone "IANA, e.g., America/Halifax"
-        time night_audit_cutoff_local "PENDING value, example 02:00"
-    }
     NIGHT_AUDIT_RUN {
         uuid id PK
-        uuid property_id FK "UNIQUE (property_id, business_date)"
-        date business_date "local date being closed"
-        varchar status "RUNNING, COMPLETED, FAILED"
-        int posted_reservations
-        text failure_reason "nullable"
-        timestamptz started_at "UTC"
-        timestamptz finished_at "UTC, nullable"
+        uuid property_id FK
+        date business_date "UK with property_id"
+        varchar status "RUNNING, SUCCEEDED, SUCCEEDED_WITH_EXCEPTIONS, FAILED"
+        smallint attempt "1 to 4"
+        timestamptz started_at
+        timestamptz finished_at
+        text error
     }
-    FOLIO_TRANSACTION {
-        uuid id PK "partial: US-15"
-        uuid folio_id FK
-        uuid night_audit_run_id FK "nullable, set for room charges"
-        date business_date "UNIQUE (folio_id, business_date) for ROOM_CHARGE"
-        varchar transaction_type "ROOM_CHARGE"
+    NIGHT_AUDIT_EXCEPTION {
+        uuid id PK
+        uuid run_id FK
+        uuid reservation_id FK
+        text error
     }
-    FOLIO {
-        uuid id PK "partial: US-15"
+    NIGHT_CHARGE {
+        uuid id PK
+        uuid reservation_id FK
+        date stay_date "UK with reservation_id"
+        uuid run_id FK
+    }
+    LEDGER_ENTRY {
+        uuid id PK "US-15"
+        uuid night_charge_id FK
+        varchar entry_type "ROOM_NIGHT or TAX"
+        numeric amount
+    }
+    RESERVATION {
+        uuid id PK "US-06"
+        varchar status "IN_HOUSE selected"
     }
 ```
-
-### Design notes
-- **`night_audit_cutoff_local`** is a property setting because the audit runs per property. Its value is PENDING.
-- **Partial unique index against double posting:** `UNIQUE (folio_id, business_date) WHERE transaction_type = 'ROOM_CHARGE'`. A night can be charged only once per folio.
-- **Timestamp types:** timestamps are `timestamptz` in UTC, while `business_date` is a local calendar date by definition.
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Scheduler tick — Scenario 2
-
-```mermaid
-flowchart TD
-    A["cron: run_night_audit (every few minutes, UTC)"] --> B[For each property]
-    B --> C["Convert now_utc to the property timezone<br/>America/Halifax, DST-aware"]
-    C --> D{"Local time past the cutoff?<br/>cutoff value PENDING"}
-    D -- No --> B
-    D -- Yes --> E["business_date = local date being closed"]
-    E --> F{"Run exists for<br/>(property, business_date)?"}
-    F -- Yes --> B
-    F -- No --> G["RunNightAuditUseCase.execute(property, business_date)"]
-    G --> B
-
-    N1["Spring forward: 02:00 to 02:59 skipped,<br/>first tick at 03:00 ADT is past the cutoff, runs once"] -.-> D
-    N2["Fall back: 01:00 to 01:59 repeats,<br/>existing run blocks a second execution"] -.-> F
-```
-
-### 3.2 Posting nightly charges — Scenarios 1 and 3
+### 3.1 Nightly run — Scenarios 1, 3, 4 and 5
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Job as NightAuditSchedulerJob
+    participant Cron as NightAuditScheduler
     participant UC as RunNightAuditUseCase
-    participant Runs as NightAuditRunRepository
-    participant Res as ReservationRepository
-    participant Post as PostRoomChargeService (US-15)
-    participant Bus as EventPublisher
-    actor GM as General Manager
+    participant Reader as InHouseReader
+    participant Charges as NightChargeRepository
+    participant Folio as FolioService
+    participant Runs as RunRepository
 
-    Job->>UC: execute(property_id, business_date)
-    UC->>Runs: add(NightAuditRun RUNNING)
-    alt Run already exists (unique violation)
-        Runs-->>UC: raise NightAuditAlreadyRunError
-        UC-->>Job: skip
-    else New run
-        UC->>Res: list_in_house(property_id)
-        Res-->>UC: In-House reservations
-        loop each In-House reservation
-            UC->>Post: post_nightly_charge(reservation, business_date, run_id)
-            Post->>Post: rate (US-03) + daily taxes (US-04)
-            Post->>Post: folio.post_charge(ROOM_CHARGE, unique per night)
-        end
-        alt All posted
-            UC->>Runs: save(run COMPLETED)
-            UC->>Bus: publish(NightAuditCompleted)
-        else Unexpected failure
-            UC->>Runs: save(run FAILED)
-            UC->>Bus: publish(NightAuditFailed)
-            Note over UC,Runs: Re-run / resume behaviour PENDING
+    Cron->>UC: execute(property, business date = previous local date)
+    UC->>Runs: start run (unique property and date)
+    UC->>Reader: in_house(property)
+    loop each In-House reservation
+        UC->>Charges: charged_nights(reservation)
+        alt posting succeeds
+            loop each uncharged night up to the business date
+                UC->>Folio: ROOM_NIGHT + Marketing Levy + HST
+            end
+        else posting fails
+            UC->>Runs: add exception (reservation, error)
         end
     end
-    GM->>GM: Night Audit report available for the business date (US-22)
+    UC->>Runs: finish (SUCCEEDED or SUCCEEDED_WITH_EXCEPTIONS)
+```
+
+### 3.2 Schedule, DST and retries — Scenario 2
+
+```mermaid
+flowchart TD
+    A[2:00 AM local time] --> B{Spring-forward day?}
+    B -- yes --> C[Run at 3:00 AM]
+    B -- no --> D{Run for this business date exists?}
+    C --> D
+    D -- yes --> Z[Skip, fall-back day runs once]
+    D -- no --> E[Run]
+    E --> F{Whole run failed?}
+    F -- no --> G[Stored, report available in US-22]
+    F -- yes --> H{Retries done < 3?}
+    H -- yes --> I[Retry in 15 minutes] --> E
+    H -- no --> J[Email the developer, error in logs]
 ```
 
 ### 3.3 Domain events
 
-| Event | Emitted by | When | Payload | Consumers |
-|---|---|---|---|---|
-| `ChargePosted` | `Folio` (US-15) | Each nightly room charge and tax posted | see US-15 | Folio balance, reports (US-22) |
-| `NightAuditCompleted` | `RunNightAuditUseCase` | Run finished for a property and business date | `run_id`, `property_id`, `business_date`, `posted_reservations`, `occurred_at_utc` | Night Audit report availability (US-22) |
-| `NightAuditFailed` | `RunNightAuditUseCase` | Run failed | `run_id`, `reason`, `occurred_at_utc` | PENDING (e.g., alert the Night Auditor) |
+| Event | Raised when | Consumers |
+|---|---|---|
+| `NightAuditCompleted` | Run finishes | Night Audit report (US-22) |
+| `RoomNightPosted` | Night charged | Folio balance (US-15), occupancy report (US-23) |
+| `NightAuditFailed` | Third retry fails | Developer email |

@@ -1,254 +1,218 @@
 # US-05 — Policy Acceptance Before Payment: Diagrams
 
-> Sources: `US-05-policy-acceptance-before-payment.md`, `docs/Business Modeling/Business Modeling.md` (Phase 1, Sections 5 and 7), `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
-> Data is scoped per **Property** (Business Modeling, Section 5) even where the story text does not mention it.
+> Source: `US-05-policy-acceptance-before-payment.md`. Related: US-06 (direct booking), US-09 (walk-in), US-07 (OTA, no acceptance), US-11 (fees shown on the page).
+
+## Business rules reflected
+
+| Rule (US-05) | Where it appears |
+|---|---|
+| T&C per property, EN and FR | `TermsVersion.property_id`, `LocalizedText` content |
+| A default T&C per property ships with the system; the GM edits it | Seed data, `PublishTermsVersionUseCase` |
+| Must include at least: 21+, no pets, no smoking/cannabis, check-in/out times, deposit | Content of the seeded default (GM text) |
+| The page shows the property's current cancellation and no-show fees, or "no fee" (US-11) | `TermsPage.fees` built from `PropertyPolicy` |
+| Every edit creates a new version; the guest must accept the latest version | Append-only `TERMS_VERSION`, `AcceptTermsUseCase` version check |
+| Acceptance before payment information is taken | `TermsAcceptanceToken` required by US-06 and US-09 |
+| Displayed in EN or FR, as the guest chooses | `language` on display and on the evidence |
+| Evidence: timestamp, version, language, channel (website or front desk); no IP address | `TERMS_ACCEPTANCE` columns |
+| Walk-ins: the agent records acceptance for the guest; the agent is stored | `recorded_by_staff_id` |
+| OTA bookings record no acceptance | US-07 flow skips this story |
 
 ---
 
-## 1. Class Diagram (Clean Architecture + Front-end)
+## 1. Class Diagram (Clean Architecture)
 
 ```mermaid
 classDiagram
     direction LR
 
     namespace Domain {
-        class TermsAndConditions {
-            <<Entity / Aggregate Root>>
-            -TermsId id
-            -PropertyId property_id
-            -str version
-            -set~PolicyItem~ policy_items
-            -dict~Language, TermsText~ texts
-            +text_for(language: Language) TermsText
+        class TermsVersion {
+            <<Aggregate Root · append-only>>
+            +TermsVersionId id
+            +PropertyId property_id
+            +int number
+            +LocalizedText content
+            +datetime published_at
+            +StaffId published_by
         }
-        class PolicyItem {
+        class AcceptanceChannel {
             <<Enumeration>>
-            AGE_21_PLUS
-            NO_PETS
-            NO_SMOKING_CANNABIS
+            WEBSITE
+            FRONT_DESK
         }
-        class TermsText {
-            <<Value Object>>
+        class TermsAcceptance {
+            <<Entity>>
+            +TermsAcceptanceId id
+            +TermsVersionId version_id
             +Language language
-            +str body
+            +AcceptanceChannel channel
+            +StaffId recorded_by
+            +datetime accepted_at
         }
-        class PolicyAcceptance {
+        class FeeDisclosure {
             <<Value Object>>
-            +TermsId terms_id
-            +str terms_version
-            +bool accepted
-            +datetime accepted_at_utc
-            +ensure_accepted() None
+            +Money cancellation_fee
+            +int cancellation_window_hours
+            +Money no_show_fee
         }
-        class Language {
-            <<Enumeration · Staff Interface Language diagram>>
-            EN
-            FR
+        class TermsRepository {
+            <<Port>>
+            +latest(property_id) TermsVersion
+            +add(version) None
         }
-        class TermsNotAcceptedError {
-            <<Domain Exception>>
-        }
-        class TermsVersionMismatchError {
-            <<Domain Exception>>
+        class AcceptanceRepository {
+            <<Port>>
         }
     }
 
     namespace Application {
-        class GetApplicableTermsUseCase {
-            <<Use Case>>
-            +execute(property_id: PropertyId, language: Language) TermsView
+        class GetTermsPageUseCase {
+            +execute(property_id, language) TermsPage
         }
-        class TermsView {
+        class TermsPage {
             <<DTO>>
-            +UUID terms_id
-            +str version
-            +list~str~ policy_items
-            +str language
-            +str body
+            +int version_number
+            +str text
+            +FeeDisclosure fees
         }
-        class TermsRepository {
+        class AcceptTermsUseCase {
+            +execute(property_id, version_id, language, channel, staff_id) TermsAcceptanceToken
+        }
+        class PublishTermsVersionUseCase {
+            <<SETTINGS · GM>>
+            +execute(property_id, content_en, content_fr) TermsVersion
+        }
+        class PropertyPolicyReader {
+            <<Port · US-11>>
+            +fees(property_id) FeeDisclosure
+        }
+        class Clock {
             <<Port>>
-            +get_active_for_property(property_id: PropertyId) TermsAndConditions
-        }
-        class CreateReservationUseCase {
-            <<Use Case · US-06>>
-            +execute(command: CreateReservationCommand) ReservationConfirmation
-        }
-        class TermsAcceptanceRepository {
-            <<Port · PENDING evidence>>
-            +record(reservation_id: ReservationId, acceptance: PolicyAcceptance) None
         }
     }
 
     namespace Infrastructure {
-        class DjangoTermsRepository {
-            <<Adapter>>
-        }
-        class DjangoTermsAcceptanceRepository {
-            <<Adapter · PENDING evidence>>
-        }
+        class DjangoTermsRepository
+        class DjangoAcceptanceRepository
     }
 
     namespace Interface {
-        class PropertyTermsView {
-            <<REST Controller>>
-            +get(request, property_id) Response
+        class TermsViews {
+            <<REST>>
+            GET /api/v1/properties/id/terms
+            POST /api/v1/properties/id/terms/acceptances
+        }
+        class TermsSettingsView {
+            <<REST · SETTINGS>>
+            POST /api/v1/properties/id/terms
         }
     }
 
-    namespace FrontEnd {
-        class BookingWizard {
-            <<React Component>>
-            +steps: SelectRoom, Policies, Payment
-        }
-        class PolicyAcceptanceStep {
-            <<React Component · MantineUI>>
-            +accepted: boolean
-            +onAccept() void
-        }
-        class PaymentStep {
-            <<React Component>>
-            +enabled: boolean
-        }
-    }
-
-    TermsAndConditions *-- TermsText
-    TermsAndConditions --> PolicyItem
-    TermsText --> Language
-    PolicyAcceptance ..> TermsNotAcceptedError : raises
-    PolicyAcceptance ..> TermsVersionMismatchError : raises
-
-    GetApplicableTermsUseCase --> TermsRepository
-    GetApplicableTermsUseCase ..> TermsView
-    CreateReservationUseCase ..> PolicyAcceptance : validates
-    CreateReservationUseCase --> TermsRepository
-    CreateReservationUseCase --> TermsAcceptanceRepository
-
+    TermsAcceptance --> TermsVersion
+    TermsAcceptance --> AcceptanceChannel
+    GetTermsPageUseCase --> TermsRepository
+    GetTermsPageUseCase --> PropertyPolicyReader
+    GetTermsPageUseCase ..> TermsPage
+    TermsPage *-- FeeDisclosure
+    AcceptTermsUseCase --> TermsRepository
+    AcceptTermsUseCase --> AcceptanceRepository
+    AcceptTermsUseCase --> Clock
+    PublishTermsVersionUseCase --> TermsRepository
     DjangoTermsRepository ..|> TermsRepository
-    DjangoTermsAcceptanceRepository ..|> TermsAcceptanceRepository
-    PropertyTermsView --> GetApplicableTermsUseCase
-
-    BookingWizard --> PolicyAcceptanceStep
-    BookingWizard --> PaymentStep
-    PolicyAcceptanceStep ..> PropertyTermsView : GET /api/v1/properties/{id}/terms
-    PolicyAcceptanceStep ..> PaymentStep : enables only when accepted
+    DjangoAcceptanceRepository ..|> AcceptanceRepository
+    TermsViews --> GetTermsPageUseCase
+    TermsViews --> AcceptTermsUseCase
+    TermsSettingsView --> PublishTermsVersionUseCase
 ```
 
 ### Design notes
-- **The three known policies are an enumeration** (`AGE_21_PLUS`, `NO_PETS`, `NO_SMOKING_CANNABIS`). The full Terms & Conditions text, including the cancellation policy, is PENDING and lives in `TermsText.body`, one per language (EN/FR).
-- **Acceptance is enforced on both sides:**
-  - **Front end:** `PaymentStep` stays disabled until `PolicyAcceptanceStep` is accepted, so no card field is shown before acceptance.
-  - **Back end:** `CreateReservationUseCase` (US-06) rejects a request without a valid `PolicyAcceptance` (`TermsNotAcceptedError`), so the rule holds even if the front end is bypassed.
-- **`TermsVersionMismatchError`** prevents accepting an outdated text if the terms changed while the guest was booking.
-- **Evidence (PENDING):**
-  - `TermsAcceptanceRepository` and its adapter exist only if acceptance must be stored as evidence (timestamp and version);
-  - otherwise acceptance is validated and not persisted.
-- **Per property:** terms are looked up per property. Whether both properties share identical policies is PENDING (Business Modeling, Section 5); one active terms record per property supports both answers.
+- **Version check (Scenario 4):** `AcceptTermsUseCase` compares the `version_id` the guest saw with `latest(property_id)`. If the GM published a newer version in the meantime, it returns `TermsOutdated` with the new version, and the guest must accept it.
+- **Acceptance token:** the use case returns a short-lived token that the booking (US-06) or walk-in (US-09) use case requires; without it the payment step is refused (Scenario 2). The acceptance row is linked to the reservation when the reservation is created.
+- **Front desk:** when `channel = FRONT_DESK`, `recorded_by` is the logged-in agent. When `channel = WEBSITE`, it is null.
+- **Fees:** the fee block is not part of the GM's text. It is rendered from the property settings at display time, so it always shows the current fees or "no fee".
 
 ---
 
-## 2. ER Diagram (PostgreSQL persistence)
+## 2. ER Diagram
 
 ```mermaid
 erDiagram
-    PROPERTY ||--o{ TERMS_AND_CONDITIONS : "publishes"
-    TERMS_AND_CONDITIONS ||--|{ TERMS_TEXT : "is written in"
-    TERMS_AND_CONDITIONS ||--|{ TERMS_POLICY_ITEM : "includes"
-    TERMS_AND_CONDITIONS ||--o{ RESERVATION_TERMS_ACCEPTANCE : "is accepted in"
-    RESERVATION ||--o| RESERVATION_TERMS_ACCEPTANCE : "records"
+    PROPERTY ||--o{ TERMS_VERSION : "publishes"
+    TERMS_VERSION ||--o{ TERMS_ACCEPTANCE : "accepted as"
+    RESERVATION ||--o| TERMS_ACCEPTANCE : "evidence"
+    STAFF_USER ||--o{ TERMS_ACCEPTANCE : "records at desk"
 
-    PROPERTY {
-        uuid id PK "partial: Property Registry diagram"
-    }
-    TERMS_AND_CONDITIONS {
+    TERMS_VERSION {
         uuid id PK
-        uuid property_id FK "NOT NULL"
-        varchar version "UNIQUE (property_id, version)"
-        boolean is_active "one active per property (partial unique index)"
-        timestamptz published_at "UTC"
+        uuid property_id FK
+        int number "UK with property_id"
+        text content_en
+        text content_fr
+        uuid published_by FK "null for the shipped default"
+        timestamptz published_at
     }
-    TERMS_TEXT {
-        uuid terms_id PK, FK
-        varchar language PK "CHECK IN ('en','fr')"
-        text body "full text PENDING"
-    }
-    TERMS_POLICY_ITEM {
-        uuid terms_id PK, FK
-        varchar item_code PK "AGE_21_PLUS, NO_PETS, NO_SMOKING_CANNABIS"
+    TERMS_ACCEPTANCE {
+        uuid id PK
+        uuid terms_version_id FK
+        uuid reservation_id FK "set when the reservation is created"
+        char language "EN or FR"
+        varchar channel "WEBSITE or FRONT_DESK"
+        uuid recorded_by_staff_id FK "FRONT_DESK only"
+        timestamptz accepted_at
     }
     RESERVATION {
-        uuid id PK "partial: US-06"
+        uuid id PK "US-06"
     }
-    RESERVATION_TERMS_ACCEPTANCE {
-        uuid reservation_id PK, FK "PENDING: only if evidence is required"
-        uuid terms_id FK
-        varchar terms_version
-        varchar language "language shown to the guest"
-        timestamptz accepted_at "UTC"
+    STAFF_USER {
+        uuid id PK "US-01"
+    }
+    PROPERTY {
+        uuid id PK "US-02"
     }
 ```
 
 ### Design notes
-- **Both languages required:** `TERMS_TEXT` has a composite key `(terms_id, language)`, and publishing requires both `en` and `fr` rows, since only these two languages are supported.
-- **One active version per property:** a partial unique index (`UNIQUE (property_id) WHERE is_active`) guarantees it.
-- **`RESERVATION_TERMS_ACCEPTANCE` is PENDING.** It is created only if acceptance evidence is required.
+- No IP address column, by rule.
+- `CHECK (channel = 'WEBSITE' AND recorded_by_staff_id IS NULL OR channel = 'FRONT_DESK' AND recorded_by_staff_id IS NOT NULL)`.
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Displaying and accepting the policies — Scenarios 1 and 3
+### 3.1 Acceptance before payment — Scenarios 1 to 5
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Guest
-    participant Wizard as BookingWizard
-    participant Step as PolicyAcceptanceStep
-    participant View as PropertyTermsView<br/>GET /api/v1/properties/{id}/terms
-    participant UC as GetApplicableTermsUseCase
-    participant Repo as TermsRepository
-    participant Pay as PaymentStep
+    participant Widget as Booking widget
+    participant View as TermsViews
+    participant Page as GetTermsPageUseCase
+    participant Accept as AcceptTermsUseCase
 
-    Guest->>Wizard: Room type and dates selected, proceed to payment
-    Wizard->>Step: Show policies step
-    Step->>View: GET with Accept-Language: fr (or en)
-    View->>UC: execute(property_id, FR)
-    UC->>Repo: get_active_for_property(property_id)
-    Repo-->>UC: TermsAndConditions
-    UC->>UC: text_for(FR)
-    UC-->>View: TermsView (version, policy items, body in FR)
-    View-->>Step: 200 OK
-    Step-->>Guest: Age 21+, No Pets, No Smoking/Cannabis and full terms, in French
-    Guest->>Step: Tick "I accept"
-    Step->>Pay: enable(terms_id, version)
-    Pay-->>Guest: Card fields displayed (US-06)
+    Guest->>Widget: continues to checkout in EN or FR
+    Widget->>View: GET terms (property, language)
+    View->>Page: execute(property_id, language)
+    Page-->>Widget: latest version text + current cancellation and no-show fees
+    Widget-->>Guest: T&C with 21+, no pets, no smoking/cannabis, times, deposit, fees
+    alt guest does not accept
+        Widget-->>Guest: payment step stays locked
+    else guest accepts version N
+        Widget->>View: POST acceptance (version N, language, WEBSITE)
+        View->>Accept: execute(...)
+        alt a newer version N+1 exists
+            Accept-->>Widget: 409 TermsOutdated with version N+1
+            Widget-->>Guest: shows version N+1 and asks for acceptance
+        else version N is the latest
+            Accept-->>Widget: 201 acceptance token
+            Widget-->>Guest: payment step unlocked (US-06)
+        end
+    end
 ```
 
-### 3.2 Policies not accepted — Scenario 2
+### 3.2 Domain events
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Guest
-    participant Step as PolicyAcceptanceStep
-    participant Pay as PaymentStep
-    participant API as POST /api/v1/reservations (US-06)
-    participant UC as CreateReservationUseCase
-
-    Guest->>Step: Does not tick "I accept"
-    Step-->>Pay: stays disabled
-    Pay-->>Guest: Card fields not shown, cannot proceed
-
-    Note over Guest,UC: Defence in depth, if the front end is bypassed
-    Guest->>API: POST without accepted terms
-    API->>UC: execute(command)
-    UC->>UC: PolicyAcceptance.ensure_accepted()
-    UC-->>API: raise TermsNotAcceptedError
-    API-->>Guest: 422 Unprocessable Entity
-```
-
-### 3.3 Domain events
-
-No domain event is emitted by this story. Acceptance travels inside the reservation request (US-06). If acceptance evidence is required (PENDING), it is stored in the same transaction as the reservation.
+| Event | Raised when | Consumers |
+|---|---|---|
+| `TermsVersionPublished` | GM saves an edit | Audit log |
+| `TermsAccepted` | Guest or agent records an acceptance | Linked to the reservation at creation (US-06, US-09) |

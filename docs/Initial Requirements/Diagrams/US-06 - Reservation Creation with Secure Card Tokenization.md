@@ -1,12 +1,27 @@
 # US-06 — Reservation Creation with Secure Card Tokenization: Diagrams
 
-> Sources: `US-06-reservation-creation-with-secure-card-tokenization.md`, `US-03-availability-search.md`, `US-04-localized-tax-calculation.md`, `docs/Business Modeling/Business Modeling.md` (Phase 1, Section 4), `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
-> Data is scoped per **Property** (Business Modeling, Section 5) even where the story text does not mention it.
+> Source: `US-06-reservation-creation-with-secure-card-tokenization.md`. Related: US-03 (quote), US-04 (taxes), US-05 (T&C), US-11 (lifecycle and fees), US-13 (deposit hold on the kept card), US-15 (folio), US-20 (guest profile).
+
+## Business rules reflected
+
+| Rule (US-06) | Where it appears |
+|---|---|
+| Card data never reaches the backend; Stripe hosted elements | Stripe Elements in the widget; backend receives a PaymentMethod id |
+| Gateway is Stripe | `PaymentGateway` port, `StripePaymentGateway` adapter |
+| Guest provides full name, email, phone and PIPEDA consent; no consent, no booking | `CreateReservationCommand`, `GuestProfileService` (US-20) |
+| Full stay (nights + taxes) charged at booking, recorded as a payment in the folio | `PaymentGateway.charge()`, `Folio.post_payment(STRIPE_CARD)` |
+| Declined charge: no reservation, no room reserved; guest can try another card | Charge happens before commit; transaction rolled back (Scenario 3) |
+| Stripe keeps the card; only its reference is stored; used for the deposit at check-in | `RESERVATION.stripe_payment_method_id`, `GUEST_PROFILE.stripe_customer_id` |
+| Direct booking starts Unconfirmed; staff confirm | `Reservation.status = UNCONFIRMED`, `ConfirmReservationUseCase` |
+| Unconfirmed bookings reserve the room, show on the dashboard, never expire | `ROOM_INVENTORY.reserved_count`, no expiry job |
+| Staff rejection: canceled, full automatic refund, no fee | `RejectReservationUseCase` |
+| Guest cancellation: refund minus the cancellation fee | US-11 (`CancelReservationUseCase`) |
+| Two emails in EN/FR: "booking received", "booking confirmed" | `Notifier` after commit |
+| Optimistic locking on RoomInventory | `RoomInventory.version`, Scenario 4 |
 
 ---
 
-## 1. Class Diagram (Clean Architecture + Front-end)
+## 1. Class Diagram (Clean Architecture)
 
 ```mermaid
 classDiagram
@@ -14,53 +29,27 @@ classDiagram
 
     namespace Domain {
         class Reservation {
-            <<Entity / Aggregate Root>>
-            -ReservationId id
-            -PropertyId property_id
-            -RoomTypeId room_type_id
-            -GuestProfileId guest_profile_id
-            -StayPeriod stay
-            -BookingChannel channel
-            -ReservationStatus status
-            -Language guest_language
-            -PaymentMethodToken payment_method_token
-            -PriceBreakdown price
-            -int version
-            +create(...)$ Reservation
+            <<Aggregate Root>>
+            +ReservationId id
+            +PropertyId property_id
+            +GuestId guest_id
+            +RoomTypeId room_type_id
+            +ConfirmationCode code
+            +Channel channel
+            +ReservationStatus status
+            +StayDates dates
+            +int guests
+            +Language language
+            +str stripe_payment_method_id
+            +confirm(actor) None
+            +cancel(actor, reason) None
         }
-        class StayPeriod {
-            <<Value Object>>
-            +date check_in_date
-            +date check_out_date
-            +nights() list~date~
-        }
-        class PriceBreakdown {
-            <<Value Object>>
-            +Money room_total
-            +list~TaxLine~ taxes
-            +Money grand_total
-        }
-        class Money {
-            <<Value Object · US-04>>
-            +Decimal amount
-            +Currency currency
-        }
-        class TaxLine {
-            <<Value Object · US-04>>
-            +str tax_code
-            +Decimal rate
-            +Money amount
-        }
-        class PaymentMethodToken {
-            <<Value Object>>
-            +str gateway
-            +str token
-        }
-        class BookingChannel {
+        class Channel {
             <<Enumeration>>
             DIRECT
-            OTA
             WALK_IN
+            PHONE
+            OTA
         }
         class ReservationStatus {
             <<Enumeration · US-11>>
@@ -72,347 +61,276 @@ classDiagram
             NO_SHOW
         }
         class RoomInventory {
-            <<Entity / Aggregate Root>>
-            -RoomTypeId room_type_id
-            -date stay_date
-            -int total_rooms
-            -int reserved_rooms
-            -int version
-            +reserve_one() None
+            <<Aggregate Root>>
+            +RoomTypeId room_type_id
+            +date stay_date
+            +int reserved_count
+            +int version
+            +reserve(sellable_rooms) None
+            +release() None
         }
-        class ReservationCreated {
-            <<Domain Event>>
-            +ReservationId reservation_id
-            +PropertyId property_id
-            +BookingChannel channel
-            +Language guest_language
-            +datetime occurred_at_utc
+        class StayQuote {
+            <<Value Object>>
+            +list~NightPrice~ nights
+            +list~TaxLine~ taxes
+            +Money total
         }
-        class InvalidStayPeriodError {
-            <<Domain Exception>>
+        class Folio {
+            <<Aggregate Root · US-15>>
+            +post_room_prepayment(payment) None
         }
-        class NoAvailabilityError {
-            <<Domain Exception>>
+        class ReservationRepository {
+            <<Port>>
+        }
+        class InventoryRepository {
+            <<Port>>
+            +lock_nights(room_type_id, nights) list~RoomInventory~
+            +save_all(rows) None
         }
     }
 
     namespace Application {
         class CreateReservationUseCase {
-            <<Use Case>>
-            +execute(command: CreateReservationCommand) ReservationConfirmation
-        }
-        class BookingService {
-            <<Application Service · shared by US-06, US-07, US-09>>
-            +book(request: BookingRequest) Reservation
+            +execute(cmd) ReservationCreated
         }
         class CreateReservationCommand {
             <<DTO>>
-            +UUID property_id
-            +UUID room_type_id
-            +date check_in_date
-            +date check_out_date
-            +GuestData guest
-            +str language
-            +str payment_method_token
-            +PolicyAcceptance terms
+            +PropertyId property_id
+            +RoomTypeId room_type_id
+            +StayDates dates
+            +int guests
+            +GuestDetails guest
+            +bool pipeda_consent
+            +str payment_method_id
+            +str terms_acceptance_token
         }
-        class ReservationConfirmation {
-            <<DTO>>
-            +UUID reservation_id
-            +str confirmation_code
-            +str status
-            +PriceBreakdown price
+        class ConfirmReservationUseCase {
+            +execute(reservation_id, staff) None
         }
-        class SendConfirmationOnReservationCreated {
-            <<Event Handler>>
-            +handle(event: ReservationCreated) None
+        class RejectReservationUseCase {
+            +execute(reservation_id, staff) None
         }
-        class CreateFolioOnReservationCreated {
-            <<Event Handler · US-15>>
-            +handle(event: ReservationCreated) None
+        class QuoteStayService {
+            <<Application Service · US-03, US-04>>
+            +quote(property, room_type, dates) StayQuote
         }
-        class ReservationRepository {
+        class GuestProfileService {
+            <<Application Service · US-20>>
+            +register_or_update(details, consent, source) GuestProfile
+        }
+        class PaymentGateway {
             <<Port>>
-            +add(reservation: Reservation) None
+            +ensure_customer(guest) str
+            +charge(customer, payment_method, amount, idempotency_key) ChargeResult
+            +refund(charge_id, amount, idempotency_key) RefundResult
         }
-        class RoomInventoryRepository {
+        class Notifier {
             <<Port>>
-            +get_for_nights(room_type_id: RoomTypeId, nights: list~date~) list~RoomInventory~
-            +save_with_version_check(items: list~RoomInventory~) None
-        }
-        class RateProvider {
-            <<Port · rate structure US-03>>
-            +nightly_rates(room_type_id: RoomTypeId, nights: list~date~) list~Money~
-        }
-        class TaxCalculator {
-            <<Port · US-04>>
-            +calculate(property_id: PropertyId, base: Money, on_date: date) list~TaxLine~
-        }
-        class GuestProfileRepository {
-            <<Port · US-20>>
-            +add(profile: GuestProfile) None
-        }
-        class GuestCommunicationService {
-            <<Application Service · Staff Interface Language diagram>>
-            +send(recipient, guest_language, template_key, context) None
+            +booking_received(reservation, language) None
+            +booking_confirmed(reservation, language) None
         }
         class UnitOfWork {
             <<Port>>
-            +commit() None
-            +rollback() None
-        }
-        class EventPublisher {
-            <<Port>>
-            +publish(event: DomainEvent) None
         }
     }
 
     namespace Infrastructure {
-        class DjangoReservationRepository {
-            <<Adapter>>
-        }
-        class DjangoRoomInventoryRepository {
-            <<Adapter · optimistic locking>>
-        }
-        class DjangoUnitOfWork {
-            <<Adapter>>
-        }
+        class StripePaymentGateway
+        class EmailNotifier
+        class DjangoReservationRepository
+        class DjangoInventoryRepository
+        class DjangoUnitOfWork
     }
 
     namespace Interface {
-        class ReservationsView {
-            <<REST Controller>>
-            +post(request) Response
+        class ReservationViews {
+            <<REST>>
+            POST /api/v1/reservations
+            POST /api/v1/reservations/id/confirm
+            POST /api/v1/reservations/id/reject
         }
     }
 
-    namespace FrontEnd {
-        class PaymentStep {
-            <<React Component>>
-            +onConfirm() void
-        }
-        class GatewayHostedFields {
-            <<Gateway SDK · Stripe or Adyen Elements, PENDING>>
-            +tokenize() Promise~token~
-        }
-    }
-
-    Reservation *-- StayPeriod
-    Reservation *-- PriceBreakdown
-    Reservation *-- PaymentMethodToken
-    Reservation --> BookingChannel
+    Reservation --> Channel
     Reservation --> ReservationStatus
-    PriceBreakdown *-- Money
-    PriceBreakdown *-- TaxLine
-    StayPeriod ..> InvalidStayPeriodError : raises
-    RoomInventory ..> NoAvailabilityError : raises
-    Reservation ..> ReservationCreated : records
-
     CreateReservationUseCase ..> CreateReservationCommand
-    CreateReservationUseCase ..> ReservationConfirmation
-    CreateReservationUseCase --> BookingService
+    CreateReservationUseCase --> QuoteStayService
+    CreateReservationUseCase --> GuestProfileService
+    CreateReservationUseCase --> InventoryRepository
+    CreateReservationUseCase --> ReservationRepository
+    CreateReservationUseCase --> PaymentGateway
+    CreateReservationUseCase --> Notifier
     CreateReservationUseCase --> UnitOfWork
-    BookingService --> RoomInventoryRepository
-    BookingService --> RateProvider
-    BookingService --> TaxCalculator
-    BookingService --> ReservationRepository
-    BookingService --> GuestProfileRepository
-    BookingService --> EventPublisher
-    SendConfirmationOnReservationCreated --> GuestCommunicationService
-    SendConfirmationOnReservationCreated ..> ReservationCreated : handles
-    CreateFolioOnReservationCreated ..> ReservationCreated : handles
-
+    CreateReservationUseCase ..> Folio
+    ConfirmReservationUseCase --> Notifier
+    RejectReservationUseCase --> PaymentGateway
+    InventoryRepository ..> RoomInventory
+    QuoteStayService ..> StayQuote
+    StripePaymentGateway ..|> PaymentGateway
+    EmailNotifier ..|> Notifier
     DjangoReservationRepository ..|> ReservationRepository
-    DjangoRoomInventoryRepository ..|> RoomInventoryRepository
+    DjangoInventoryRepository ..|> InventoryRepository
     DjangoUnitOfWork ..|> UnitOfWork
-    ReservationsView --> CreateReservationUseCase
-
-    PaymentStep --> GatewayHostedFields
-    PaymentStep ..> ReservationsView : POST /api/v1/reservations with token
+    ReservationViews --> CreateReservationUseCase
+    ReservationViews --> ConfirmReservationUseCase
+    ReservationViews --> RejectReservationUseCase
 ```
 
 ### Design notes
-- **Card data never reaches the back end (PCI-DSS):**
-  - `GatewayHostedFields` (Stripe or Adyen Elements, gateway PENDING) is rendered by the gateway inside the page and returns a token;
-  - the back end only ever receives and stores `PaymentMethodToken`.
-- **`BookingService` is the single booking core.** Availability, price, taxes, inventory reservation and reservation creation happen in one place, reused by direct bookings (US-06), OTA bookings (US-07) and walk-ins (US-09). This is how "the same availability, concurrency and tax rules" are guaranteed.
-- **`StayPeriod`** enforces the US-03 rules: a minimum of 1 night and a maximum of 5 nights. Check-in is from 4:00 PM and check-out by 11:00 AM in the property's local time. The booking window is PENDING.
-- **Scenario 3 (concurrency):**
-  - `RoomInventory` is one row per room type per night;
-  - `reserve_one()` increments `reserved_rooms` only while it is below `total_rooms`;
-  - the repository saves with `WHERE version = :expected`, so if another transaction updated the row first, zero rows are affected and the whole transaction rolls back (`NoAvailabilityError`).
-- **Money:** every amount is `Money` (`Decimal` plus currency), following US-04.
-- **After commit:**
-  - `ReservationCreated` triggers the folio creation (US-15), inside the same transaction;
-  - it also triggers the confirmation email in the guest's language, which is sent only after commit so no email goes out for a rolled-back booking.
-- **PENDING:**
-  - initial status (`UNCONFIRMED` or `CONFIRMED`) and what confirms it;
-  - whether any amount is charged at booking;
-  - the booking window (how far ahead inventory rows exist).
+- **Order inside `CreateReservationUseCase`** (one database transaction):
+  1. check the T&C acceptance token (US-05) and the PIPEDA consent;
+  2. quote the stay again on the server (never trust the client total);
+  3. reserve every night in `ROOM_INVENTORY` with optimistic locking (`UPDATE ... SET reserved_count = reserved_count + 1, version = version + 1 WHERE id = ? AND version = ?`); a lost update raises `RoomNoLongerAvailable` (Scenario 4);
+  4. register or update the guest profile (US-20) and its Stripe customer;
+  5. charge the full total through Stripe with an idempotency key; a decline raises `PaymentDeclined` and the transaction rolls back, so no reservation and no reserved night exist (Scenario 3);
+  6. create the reservation as `UNCONFIRMED` and its folio, and post the payment as a `STRIPE_CARD` credit; room charges are **not** posted yet, because the Night Audit posts each night (US-14);
+  7. after commit, send "booking received".
+- **If the commit fails after a successful charge**, an after-rollback handler refunds the charge with the same idempotency key, so the guest is never charged without a reservation.
+- **Card kept by Stripe:** the charge uses `setup_future_usage = off_session`, so the same PaymentMethod can be used for the deposit hold at check-in (US-13), extra charges at check-out (US-17) and late fines (US-16).
+- **Confirm / reject** need the `FRONT_DESK_WORK` permission (Front Desk Agent or GM). Reject = cancel with reason `MOTEL_DECISION`, full refund, no fee, nights released.
+- **Tokenization failure (Scenario 2)** happens in Stripe Elements before any call to the backend.
 
 ---
 
-## 2. ER Diagram (PostgreSQL persistence)
+## 2. ER Diagram
 
 ```mermaid
 erDiagram
     PROPERTY ||--o{ RESERVATION : "receives"
-    ROOM_TYPE ||--o{ RESERVATION : "is booked as"
-    GUEST_PROFILE ||--o{ RESERVATION : "makes"
-    RESERVATION ||--|{ RESERVATION_NIGHT : "occupies"
-    RESERVATION ||--o{ RESERVATION_TAX_LINE : "is taxed by"
-    ROOM_TYPE ||--o{ ROOM_INVENTORY : "is counted in"
-    ROOM_INVENTORY ||--o{ RESERVATION_NIGHT : "is consumed by"
+    GUEST_PROFILE ||--o{ RESERVATION : "books"
+    ROOM_TYPE ||--o{ RESERVATION : "booked as"
+    RESERVATION ||--|{ RESERVATION_NIGHT : "covers"
+    ROOM_INVENTORY ||--o{ RESERVATION_NIGHT : "consumed by"
+    RESERVATION ||--|| FOLIO : "has"
+    RESERVATION ||--o{ RESERVATION_STATUS_HISTORY : "records"
 
     RESERVATION {
         uuid id PK
-        uuid property_id FK "NOT NULL"
-        uuid room_type_id FK "NOT NULL"
-        uuid guest_profile_id FK "NOT NULL"
-        uuid room_id FK "nullable, assignment PENDING (US-13)"
+        uuid property_id FK
+        uuid guest_id FK
+        uuid room_type_id FK
+        uuid room_id FK "assigned at check-in, US-13"
         varchar confirmation_code UK
-        varchar channel "DIRECT, OTA, WALK_IN"
-        varchar status "US-11, initial value PENDING"
+        varchar channel "DIRECT, WALK_IN, PHONE, OTA"
+        varchar status "starts UNCONFIRMED for DIRECT"
         date check_in_date
-        date check_out_date "CHECK 1 to 5 nights"
-        varchar guest_language "CHECK IN ('en','fr')"
-        varchar payment_gateway "PENDING: stripe or adyen"
-        varchar payment_method_token "gateway token, never card data"
-        numeric room_total_amount "numeric(12,2)"
-        numeric grand_total_amount "numeric(12,2)"
-        char currency "CAD"
-        int version "optimistic locking"
-        timestamptz created_at "UTC"
-        timestamptz updated_at "UTC"
+        date check_out_date
+        smallint guests
+        char language "EN or FR"
+        varchar stripe_payment_method_id "reference only"
+        varchar stripe_charge_id
+        varchar cancel_token_hash "US-11"
+        int version
+        timestamptz created_at
     }
     RESERVATION_NIGHT {
         uuid reservation_id PK, FK
         date stay_date PK
         uuid room_inventory_id FK
-        numeric nightly_rate_amount
-        char currency
-    }
-    RESERVATION_TAX_LINE {
-        uuid id PK
-        uuid reservation_id FK
-        varchar tax_code "GST, HST, PST, US-04"
-        numeric rate "numeric(6,4)"
-        numeric amount "numeric(12,2)"
+        numeric nightly_rate "quoted, before taxes"
         char currency
     }
     ROOM_INVENTORY {
         uuid id PK
-        uuid property_id FK
-        uuid room_type_id FK "UNIQUE (room_type_id, stay_date)"
-        date stay_date
-        int total_rooms
-        int reserved_rooms "CHECK reserved_rooms <= total_rooms"
-        int version "optimistic locking"
+        uuid room_type_id FK
+        date stay_date "UK with room_type_id"
+        int reserved_count
+        int version "optimistic lock"
     }
-    ROOM_TYPE {
-        uuid id PK "partial: US-02"
+    FOLIO {
+        uuid id PK "US-15"
+        uuid reservation_id FK, UK
+        char currency "CAD"
+    }
+    RESERVATION_STATUS_HISTORY {
+        uuid id PK "US-11"
+        uuid reservation_id FK
+        varchar from_status
+        varchar to_status
+        varchar actor_type "GUEST, STAFF, SYSTEM"
+        uuid actor_id
+        timestamptz changed_at
     }
     GUEST_PROFILE {
-        uuid id PK "partial: US-20"
-    }
-    PROPERTY {
-        uuid id PK "partial"
+        uuid id PK "US-20"
+        varchar stripe_customer_id
     }
 ```
-
-### Design notes
-- **`ROOM_INVENTORY`** completes the partial table of the room registry: one row per room type and night. The check `reserved_rooms <= total_rooms` is the last line of defence against overbooking, and `version` supports the optimistic locking required by the business document.
-- **`RESERVATION_NIGHT`** records which inventory nights a reservation consumes, so a cancellation (US-11) can release exactly those nights.
-- **Money columns:** every amount is stored as `numeric(12,2)` next to a currency column (US-04 rule: value and currency together). No floating-point types are used.
-- **`payment_method_token`** is only the gateway's reference. Card numbers, expiry dates and CVCs are never stored.
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Successful reservation — Scenario 1
+### 3.1 Successful booking, decline and concurrency — Scenarios 1, 3 and 4
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Guest
-    participant Pay as PaymentStep
-    participant GW as Payment Gateway (hosted fields)
-    participant View as ReservationsView<br/>POST /api/v1/reservations
+    participant Elements as Stripe Elements
+    participant View as ReservationViews<br/>POST /api/v1/reservations
     participant UC as CreateReservationUseCase
-    participant Book as BookingService
-    participant Inv as RoomInventoryRepository
-    participant Repo as ReservationRepository
-    participant Bus as EventPublisher
-    participant Mail as GuestCommunicationService
+    participant Inv as InventoryRepository
+    participant Pay as PaymentGateway
+    participant DB as UnitOfWork
+    participant Mail as Notifier
 
-    Guest->>Pay: Enter card in secure fields, confirm
-    Pay->>GW: tokenize()
-    GW-->>Pay: payment_method_token
-    Pay->>View: POST {stay, guest, language, token, terms}
-    View->>UC: execute(CreateReservationCommand)
-    UC->>UC: Validate terms acceptance (US-05)
-    UC->>Book: book(request) inside UnitOfWork
-    Book->>Inv: get_for_nights(room_type_id, nights)
-    Inv-->>Book: RoomInventory rows
-    Book->>Book: reserve_one() for each night
-    Book->>Book: price = rates + taxes (US-03, US-04)
-    Book->>Repo: add(reservation)
-    Book->>Inv: save_with_version_check(rows)
-    Book->>Bus: publish(ReservationCreated)
-    Bus->>Bus: CreateFolioOnReservationCreated (US-15, same transaction)
-    UC->>UC: commit
-    UC-->>View: ReservationConfirmation
-    View-->>Pay: 201 Created {confirmation_code, price}
-    Bus->>Mail: after commit: send confirmation (guest_language)
-    Mail-->>Guest: Confirmation email in EN or FR
-```
-
-### 3.2 Card tokenization fails — Scenario 2
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Guest
-    participant Pay as PaymentStep
-    participant GW as Payment Gateway (hosted fields)
-    participant View as ReservationsView
-
-    Guest->>Pay: Enter card, confirm
-    Pay->>GW: tokenize()
-    GW-->>Pay: error (e.g., invalid or declined card)
-    Pay-->>Guest: Failure message, no reservation created
-    Note over Pay,View: No request reaches the back end, so no reservation or inventory change exists
-```
-
-### 3.3 Concurrent booking of the last room — Scenario 3
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor A as Guest A
-    actor B as Guest B
-    participant UC as CreateReservationUseCase
-    participant DB as PostgreSQL (ROOM_INVENTORY)
-
-    par Same moment
-        A->>UC: Book last "Double Queen"
-        UC->>DB: SELECT row (reserved=4, total=5, version=7)
-    and
-        B->>UC: Book last "Double Queen"
-        UC->>DB: SELECT row (reserved=4, total=5, version=7)
+    Guest->>Elements: card details
+    Elements-->>Guest: payment_method_id (card never reaches the backend)
+    Guest->>View: room type, dates, guest details, consent, T&C token, payment_method_id
+    View->>UC: execute(cmd)
+    UC->>DB: begin
+    UC->>Inv: reserve each night (version check)
+    alt another booking took the last room
+        Inv-->>UC: RoomNoLongerAvailable
+        UC->>DB: rollback
+        View-->>Guest: 409 room no longer available
+    else nights reserved
+        UC->>Pay: charge(full stay + taxes, idempotency key)
+        alt charge declined
+            Pay-->>UC: declined
+            UC->>DB: rollback (no reservation, no room reserved)
+            View-->>Guest: 402 decline message, try another card
+        else charge succeeded
+            UC->>DB: reservation UNCONFIRMED, folio, STRIPE_CARD payment
+            UC->>DB: commit
+            DB-->>Mail: after commit: booking received (EN/FR)
+            View-->>Guest: 201 Created, confirmation code
+        end
     end
-    UC->>DB: A: UPDATE reserved=5, version=8 WHERE version=7
-    DB-->>UC: 1 row updated
-    UC-->>A: 201 Created
-    UC->>DB: B: UPDATE reserved=5, version=8 WHERE version=7
-    DB-->>UC: 0 rows updated (version changed)
-    UC->>UC: rollback B, raise NoAvailabilityError
-    UC-->>B: 409 Conflict, room no longer available
 ```
 
-### 3.4 Domain events
+### 3.2 Staff confirms or rejects — Scenarios 5 and 6
 
-| Event | Emitted by | When | Payload | Consumers |
-|---|---|---|---|---|
-| `ReservationCreated` | `BookingService` | A reservation is saved (any channel) | `reservation_id`, `property_id`, `channel`, `guest_language`, `occurred_at_utc` | `CreateFolioOnReservationCreated` (US-15, same transaction); `SendConfirmationOnReservationCreated` (after commit) |
+```mermaid
+sequenceDiagram
+    autonumber
+    actor FDA as Front Desk Agent or GM
+    participant View as ReservationViews
+    participant Confirm as ConfirmReservationUseCase
+    participant Reject as RejectReservationUseCase
+    participant Pay as PaymentGateway
+    participant Mail as Notifier
+
+    alt confirm
+        FDA->>View: POST /reservations/{id}/confirm
+        View->>Confirm: execute(id, staff)
+        Confirm-->>Mail: after commit: booking confirmed (EN/FR)
+        View-->>FDA: 200 Confirmed
+    else reject
+        FDA->>View: POST /reservations/{id}/reject
+        View->>Reject: execute(id, staff)
+        Reject->>Reject: status CANCELED, reason MOTEL_DECISION, nights released
+        Reject->>Pay: refund(full amount, no fee)
+        View-->>FDA: 200 Canceled and refunded
+    end
+```
+
+### 3.3 Domain events
+
+| Event | Raised when | Consumers |
+|---|---|---|
+| `ReservationCreated` | Booking committed | "Booking received" email, front desk dashboard (US-10) |
+| `PaymentReceived` | Stripe charge posted to the folio | Folio (US-15) |
+| `ReservationConfirmed` | Staff confirms | "Booking confirmed" email, dashboard |
+| `ReservationCanceled` | Staff rejects (no fee) | Refund (US-11), inventory release, dashboard |

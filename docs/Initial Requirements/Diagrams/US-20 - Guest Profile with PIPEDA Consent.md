@@ -1,8 +1,21 @@
 # US-20 — Guest Profile with PIPEDA Consent: Diagrams
 
-> Sources: `US-20-guest-profile-with-pipeda-consent.md`, `US-21-forget-me-pii-anonymization.md`, `docs/Business Modeling/Business Modeling.md` (Section 2 "GuestProfile", Section 4 "Strict Security & PIPEDA"), `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
-> Whether guest profiles are shared across properties is PENDING (Business Modeling, Section 5); this design keeps profiles property-independent and links them through reservations.
+> Source: `US-20-guest-profile-with-pipeda-consent.md`. Related: US-06, US-07, US-09 (where profiles are created), US-21 (anonymization).
+
+## Business rules reflected
+
+| Rule (US-20) | Where it appears |
+|---|---|
+| Fields: full name, email, phone, preferred language, consent (yes/no, date and time, source) | `GuestProfile`, `PipedaConsent` |
+| `PIPEDA_consent_flag` required on the profile | `GUEST_PROFILE.pipeda_consent_flag` |
+| No consent → no registration; OTA consent via the OTA, source "OTA" | `GuestProfileService` guard; `ConsentSource.OTA` |
+| Consent covers reservations and stays only; no marketing emails in V1 | No marketing port or flag |
+| Returning guest matched by email (case-insensitive); name and phone updated | `email_hash` of the normalized email, `register_or_update()` |
+| One profile shared by all properties | No `property_id` on the profile |
+| Full name, email and phone encrypted | `*_enc` columns, `FieldEncryptor` port |
+| Kept until "Forget Me"; no automatic deletion | No retention job; US-21 |
+| Supports anonymization | Nullable PII columns (US-21) |
+| FDA and GM view and edit; no guest self-edit | `GUEST_PROFILES` permission; no public endpoint |
 
 ---
 
@@ -14,239 +27,159 @@ classDiagram
 
     namespace Domain {
         class GuestProfile {
-            <<Entity / Aggregate Root>>
-            -GuestProfileId id
-            -PersonalInformation | None personal_information
-            -PipedaConsent consent
-            -Language preferred_language
-            -AnonymousDemographics | None demographics
-            -datetime | None anonymized_at_utc
-            +register(personal_information, consent, language)$ GuestProfile
-            +update_personal_information(info: PersonalInformation) None
-            +is_anonymized() bool
-        }
-        class PersonalInformation {
-            <<Value Object · PII>>
+            <<Aggregate Root>>
+            +GuestId id
             +str full_name
             +EmailAddress email
-            +str | None phone
-            %% mandatory fields PENDING
-        }
-        class EmailAddress {
-            <<Value Object>>
-            +str value
+            +str phone
+            +Language preferred_language
+            +PipedaConsent consent
+            +str stripe_customer_id
+            +datetime anonymized_at
+            +update_contact(name, phone) None
         }
         class PipedaConsent {
             <<Value Object>>
-            +bool consent_flag
-            +datetime recorded_at_utc
+            +bool given
+            +datetime given_at
             +ConsentSource source
         }
         class ConsentSource {
             <<Enumeration>>
-            BOOKING_WIDGET
+            WEBSITE
             FRONT_DESK
             OTA
         }
-        class AnonymousDemographics {
-            <<Value Object · fields PENDING, US-21>>
-        }
-        class GuestProfileRegistered {
-            <<Domain Event>>
-            +GuestProfileId guest_profile_id
-            +bool consent_flag
-            +datetime occurred_at_utc
-        }
-        class MissingConsentDecisionError {
-            <<Domain Exception>>
-        }
-        class GuestProfileAnonymizedError {
-            <<Domain Exception>>
+        class GuestRepository {
+            <<Port>>
+            +by_email_hash(hash) GuestProfile
+            +save(profile) None
         }
     }
 
     namespace Application {
-        class RegisterGuestProfileUseCase {
-            <<Use Case>>
-            +execute(command: RegisterGuestProfileCommand) GuestProfileId
+        class GuestProfileService {
+            <<Application Service>>
+            +register_or_update(details, consent, source) GuestProfile
+        }
+        class UpdateGuestProfileUseCase {
+            <<GUEST_PROFILES>>
         }
         class GetGuestProfileUseCase {
-            <<Query Use Case>>
-            +execute(guest_profile_id: GuestProfileId) GuestProfileView
+            <<GUEST_PROFILES>>
         }
-        class RegisterGuestProfileCommand {
-            <<DTO>>
-            +str full_name
-            +str email
-            +str | None phone
-            +bool pipeda_consent
-            +str consent_source
-            +str preferred_language
-        }
-        class GuestProfileRepository {
+        class FieldEncryptor {
             <<Port>>
-            +add(profile: GuestProfile) None
-            +get_by_id(guest_profile_id: GuestProfileId) GuestProfile
-            +save(profile: GuestProfile) None
+            +encrypt(text) bytes
+            +decrypt(data) str
         }
-        class BookingService {
-            <<Application Service · US-06>>
-            +book(request: BookingRequest) Reservation
-        }
-        class Clock {
+        class EmailHasher {
             <<Port>>
-            +now_utc() datetime
-        }
-        class EventPublisher {
-            <<Port>>
-            +publish(event: DomainEvent) None
+            +hash(normalized_email) str
         }
     }
 
     namespace Infrastructure {
-        class DjangoGuestProfileRepository {
-            <<Adapter · PII columns encrypted at rest>>
+        class FernetFieldEncryptor {
+            <<key from environment>>
         }
+        class HmacEmailHasher {
+            <<keyed hash>>
+        }
+        class DjangoGuestRepository
     }
 
     namespace Interface {
-        class GuestProfilesView {
-            <<REST Controller>>
-            +post(request) Response
-        }
-        class GuestProfileDetailView {
-            <<REST Controller>>
-            +get(request, guest_profile_id) Response
+        class GuestViews {
+            <<REST · GUEST_PROFILES>>
+            GET /api/v1/guests?q=
+            GET /api/v1/guests/id
+            PATCH /api/v1/guests/id
         }
     }
 
-    GuestProfile *-- PersonalInformation
     GuestProfile *-- PipedaConsent
-    GuestProfile *-- AnonymousDemographics
-    PersonalInformation *-- EmailAddress
     PipedaConsent --> ConsentSource
-    GuestProfile ..> GuestProfileRegistered : records
-    GuestProfile ..> MissingConsentDecisionError : raises
-    GuestProfile ..> GuestProfileAnonymizedError : raises
-
-    RegisterGuestProfileUseCase ..> RegisterGuestProfileCommand
-    RegisterGuestProfileUseCase --> GuestProfileRepository
-    RegisterGuestProfileUseCase --> Clock
-    RegisterGuestProfileUseCase --> EventPublisher
-    GetGuestProfileUseCase --> GuestProfileRepository
-    BookingService --> GuestProfileRepository : links reservation
-
-    DjangoGuestProfileRepository ..|> GuestProfileRepository
-    GuestProfilesView --> RegisterGuestProfileUseCase
-    GuestProfileDetailView --> GetGuestProfileUseCase
+    GuestProfileService --> GuestRepository
+    GuestProfileService --> EmailHasher
+    UpdateGuestProfileUseCase --> GuestRepository
+    GetGuestProfileUseCase --> GuestRepository
+    DjangoGuestRepository ..|> GuestRepository
+    DjangoGuestRepository --> FieldEncryptor
+    FernetFieldEncryptor ..|> FieldEncryptor
+    HmacEmailHasher ..|> EmailHasher
+    GuestViews --> GetGuestProfileUseCase
+    GuestViews --> UpdateGuestProfileUseCase
 ```
 
 ### Design notes
-- **PII is isolated in one value object:** all PII sits in `PersonalInformation`, kept apart from the rest of the profile. "Forget Me" (US-21) can then remove PII in one operation, and the rest of the system references guests only by `GuestProfileId`.
-- **Consent is stored with its context (Scenario 1):**
-  - `PipedaConsent` keeps the flag required by the business document, when it was recorded (UTC) and from which channel;
-  - a profile cannot be registered without an explicit consent decision (`MissingConsentDecisionError`);
-  - what the system does when consent is **not** given is PENDING.
-- **Scenario 2:** reservations reference `guest_profile_id` (US-06). The profile is created or reused by `BookingService` when a booking is made.
-- **Anonymized profiles are read-only:** after anonymization (US-21), updates raise `GuestProfileAnonymizedError`.
-- **Encryption at rest (technical recommendation):** PII columns are encrypted at rest, e.g., PostgreSQL `pgcrypto` or application-level field encryption, so database backups do not expose PII in clear text.
-- **PENDING:**
-  - mandatory profile fields (only name and email are assumed);
-  - matching a returning guest to an existing profile;
-  - sharing profiles across properties.
-- **Permission:** reading PII requires a `GUEST_DATA_ACCESS` permission (role-permission matrix, US-01).
+- **Matching:** the email is trimmed and lower-cased, then hashed with a keyed hash (`email_hash`, unique). Encrypted columns cannot be searched, so the hash is the lookup key (Scenario 4).
+- **`register_or_update()`:** refuses when consent is not given (Scenario 3), so the calling booking use case creates nothing; for an existing profile it updates the name and phone and keeps the original consent record; for OTA bookings the consent is recorded with source `OTA`.
+- **Preferred language** is updated from the latest booking language.
+- **Encryption** happens in the repository adapter, so the domain works with plain values and the database stores only ciphertext.
 
 ---
 
-## 2. ER Diagram (PostgreSQL persistence)
+## 2. ER Diagram
 
 ```mermaid
 erDiagram
-    GUEST_PROFILE ||--o{ RESERVATION : "makes"
+    GUEST_PROFILE ||--o{ RESERVATION : "books"
 
     GUEST_PROFILE {
         uuid id PK
-        bytea full_name_enc "PII, encrypted, nullable after anonymization"
-        bytea email_enc "PII, encrypted, nullable after anonymization"
-        varchar email_hash "for lookups without decrypting, nullable"
-        bytea phone_enc "PII, encrypted, nullable"
-        boolean pipeda_consent_flag "NOT NULL"
-        varchar consent_source "BOOKING_WIDGET, FRONT_DESK, OTA"
-        timestamptz consent_recorded_at "UTC"
-        varchar preferred_language "CHECK IN ('en','fr')"
-        timestamptz anonymized_at "UTC, nullable (US-21)"
-        timestamptz created_at "UTC"
-        timestamptz updated_at "UTC"
+        bytea full_name_enc "nullable, US-21"
+        bytea email_enc "nullable, US-21"
+        varchar email_hash UK "nullable, US-21"
+        bytea phone_enc "nullable, US-21"
+        char preferred_language "EN or FR"
+        boolean pipeda_consent_flag
+        timestamptz consent_given_at
+        varchar consent_source "WEBSITE, FRONT_DESK, OTA"
+        varchar stripe_customer_id "US-06, deleted by US-21"
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz anonymized_at "US-21"
     }
     RESERVATION {
-        uuid id PK "partial: US-06"
-        uuid guest_profile_id FK "NOT NULL"
+        uuid id PK "US-06"
+        uuid guest_id FK
+        uuid property_id FK "profile shared by both properties"
     }
 ```
-
-### Design notes
-- **Encrypted columns:** `*_enc` columns hold encrypted values. `email_hash` (a keyed hash) supports finding a returning guest without decrypting every row; matching rules are PENDING.
-- **`pipeda_consent_flag NOT NULL`** makes the database itself reject a profile without a consent decision.
-- **Anonymous demographic columns** are added once US-21 defines which ones are kept.
-- **Field names are illustrative** until the mandatory profile fields are defined.
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Registering a profile — Scenario 1
+### 3.1 Registration during a booking — Scenarios 1 to 4
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Agent as Front Desk Agent
-    participant View as GuestProfilesView<br/>POST /api/v1/guest-profiles
-    participant UC as RegisterGuestProfileUseCase
-    participant Profile as GuestProfile
-    participant Repo as GuestProfileRepository
-    participant Bus as EventPublisher
+    participant Booking as Booking use case (US-06, US-07, US-09)
+    participant Svc as GuestProfileService
+    participant Hash as EmailHasher
+    participant Repo as GuestRepository
 
-    Agent->>View: POST {name, email, phone, pipeda_consent, language}
-    View->>UC: execute(command)
-    UC->>Profile: GuestProfile.register(info, consent, language)
-    alt Consent decision missing
-        Profile-->>UC: raise MissingConsentDecisionError
-        UC-->>View: error
-        View-->>Agent: 422 Unprocessable Entity
-    else Consent given
-        Profile-->>UC: GuestProfile (consent_flag = true, recorded_at)
-        UC->>Repo: add(profile), PII encrypted by the adapter
-        UC->>Bus: publish(GuestProfileRegistered)
-        UC-->>View: guest_profile_id
-        View-->>Agent: 201 Created
-    else Consent refused
-        Note over UC,Agent: PENDING: what the system does when consent is not given
+    Booking->>Svc: register_or_update(details, consent, source)
+    alt consent not given
+        Svc-->>Booking: ConsentRequired, nothing created
+    else consent given
+        Svc->>Hash: hash(normalized email)
+        Svc->>Repo: by_email_hash(hash)
+        alt returning guest
+            Svc->>Repo: save(name and phone updated)
+        else new guest
+            Svc->>Repo: save(new profile, encrypted PII, consent, date and time, source)
+        end
+        Svc-->>Booking: profile, linked to the reservation
     end
 ```
 
-### 3.2 Linking the profile to a reservation — Scenario 2
+### 3.2 Domain events
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Caller as Booking (US-06) / Walk-in (US-09) / OTA (US-07)
-    participant Book as BookingService
-    participant Profiles as GuestProfileRepository
-    participant Res as ReservationRepository
-
-    Caller->>Book: book(request with guest_profile_id or guest data)
-    alt Existing profile
-        Book->>Profiles: get_by_id(guest_profile_id)
-        Profiles-->>Book: GuestProfile
-    else New guest
-        Book->>Profiles: add(GuestProfile.register(...))
-    end
-    Book->>Res: add(reservation with guest_profile_id)
-    Note over Book,Res: The reservation stores only the reference, never a copy of the PII
-```
-
-### 3.3 Domain events
-
-| Event | Emitted by | When | Payload | Consumers |
-|---|---|---|---|---|
-| `GuestProfileRegistered` | `RegisterGuestProfileUseCase` / `BookingService` | Profile created | `guest_profile_id`, `consent_flag`, `occurred_at_utc` (no PII) | none |
+| Event | Raised when | Consumers |
+|---|---|---|
+| `GuestProfileCreated` | New profile | — |
+| `GuestProfileUpdated` | Returning guest or staff edit | Audit log (no PII in details) |

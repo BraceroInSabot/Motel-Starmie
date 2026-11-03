@@ -1,147 +1,135 @@
 # US-18 — Housekeeping Room Board: Diagrams
 
-> Sources: `US-18-housekeeping-room-board.md`, `US-19-room-state-machine-and-cleaning-verification.md`, `US-01-staff-authentication-and-role-based-access.md`, `docs/Business Modeling/Business Modeling.md` (Personas), `docs/Tech Stack/Tools.md`, `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
-> Data is scoped per **Property** (Business Modeling, Section 5) even where the story text does not mention it.
+> Source: `US-18-housekeeping-room-board.md`. Related: US-01 (permissions, Head Housekeeper), US-02 (room note), US-10 (dashboard receives the same pushes), US-19 (states and actions).
+
+## Business rules reflected
+
+| Rule (US-18) | Where it appears |
+|---|---|
+| Works on mobile and tablet | `HousekeepingBoard` responsive React/MantineUI page |
+| Real-time with WebSockets (Django Channels), RabbitMQ as message layer | `RoomBoardConsumer`, `ChannelsRealtimePublisher` |
+| State → group mapping (Clean, Stayover, Stayover + badge, Checkout/Dirty, Out of service) | `BoardGroupMapper` |
+| Everyone sees Out of service; only Head Housekeeper or GM act on it | `AllowedActionsPolicy` |
+| Card: number, type, state, badge, note, allowed actions | `RoomCard` DTO |
+| No financial data, no guest names | `RoomCard` has no guest or money fields |
+| Own property (GM chooses); sorted by room number within each group | `PropertyScope`, ordering |
+| State changes also pushed to the front desk dashboard | Same group `property.{id}.rooms` consumed by US-10 |
 
 ---
 
-## 1. Class Diagram (Clean Architecture + Front-end)
+## 1. Class Diagram (Clean Architecture)
 
 ```mermaid
 classDiagram
     direction LR
 
     namespace Domain {
-        class HousekeepingGroup {
+        class BoardGroup {
             <<Enumeration>>
             CHECKOUT_DIRTY
             STAYOVER
             CLEAN
+            OUT_OF_SERVICE
         }
-        class HousekeepingGroupMapper {
-            <<Domain Service · mapping PENDING>>
-            +group_for(room_state: RoomState, has_in_house_reservation: bool) HousekeepingGroup
+        class BoardGroupMapper {
+            <<Domain Service>>
+            +group(room_state, guest_in_house) BoardGroup
+            +cleaning_requested(room_state, guest_in_house) bool
         }
-        class RoomState {
+        class AllowedActionsPolicy {
+            <<Domain Service · US-19>>
+            +actions(room, guest_in_house, user) list~RoomAction~
+        }
+        class RoomAction {
             <<Enumeration · US-19>>
-            AVAILABLE
-            OCCUPIED
-            DIRTY
-            CLEANING
-        }
-        class RoomStateChanged {
-            <<Domain Event · US-19>>
-            +RoomId room_id
-            +PropertyId property_id
-            +RoomState from_state
-            +RoomState to_state
-            +datetime occurred_at_utc
+            REQUEST_STAYOVER_CLEANING
+            MARK_CLEANED
+            START_CLEANING
+            VERIFY
+            TAKE_OUT_OF_SERVICE
+            RETURN_TO_SERVICE
         }
     }
 
     namespace Application {
         class GetRoomBoardUseCase {
-            <<Query Use Case>>
-            +execute(property_id: PropertyId) RoomBoard
-        }
-        class ChangeRoomStateUseCase {
-            <<Use Case · US-19>>
-            +execute(command: ChangeRoomStateCommand) None
-        }
-        class BroadcastRoomStateOnChange {
-            <<Event Handler · after commit>>
-            +handle(event: RoomStateChanged) None
+            <<Query>>
+            +execute(user, property_id) RoomBoard
         }
         class RoomBoard {
-            <<DTO · no financial fields>>
-            +dict~HousekeepingGroup, list~RoomBoardItem~~ groups
+            <<DTO>>
+            +dict groups
         }
-        class RoomBoardItem {
-            <<DTO · no financial fields>>
-            +UUID room_id
+        class RoomCard {
+            <<DTO · no guest, no money>>
+            +RoomId id
             +str number
             +str room_type
-            +str state
+            +RoomState state
+            +bool cleaning_requested
+            +str note
+            +list~RoomAction~ allowed_actions
         }
         class RoomBoardReadModel {
-            <<Port · read side>>
-            +rooms_with_occupancy(property_id: PropertyId) list~RoomOccupancyRow~
+            <<Port>>
+            +rooms(property_id) list~RoomFacts~
         }
-        class RealtimeNotifier {
-            <<Port · technology PENDING>>
-            +publish(channel: str, message: dict) None
+        class RoomStateChangedHandler {
+            <<after commit>>
+            +handle(event) None
+        }
+        class RealtimePublisher {
+            <<Port>>
+            +publish(group, payload) None
         }
     }
 
     namespace Infrastructure {
-        class PostgresRoomBoardReadModel {
-            <<Adapter>>
+        class ChannelsRealtimePublisher {
+            <<Django Channels · RabbitMQ channel layer>>
         }
-        class RealtimeNotifierAdapter {
-            <<Adapter · WebSocket or SSE, PENDING>>
-        }
+        class PostgresRoomBoardReadModel
     }
 
     namespace Interface {
         class RoomBoardView {
-            <<REST Controller>>
-            +get(request, property_id) Response
+            <<REST · HOUSEKEEPING_BOARD>>
+            GET /api/v1/properties/id/room-board
         }
-        class RoomStateView {
-            <<REST Controller · US-19>>
-            +post(request, room_id) Response
-        }
-        class RoomBoardStream {
-            <<Real-time endpoint · PENDING>>
-            +subscribe(property_id) Stream
+        class RoomBoardConsumer {
+            <<WebSocket>>
+            ws /ws/properties/id/rooms
         }
     }
 
     namespace FrontEnd {
-        class RoomBoardPage {
-            <<React Component · MantineUI, mobile-first>>
-            +groups: RoomBoard
-            +onStateChange(roomId, action) void
-        }
-        class FrontDeskDashboardPage {
-            <<React Component · US-10>>
+        class HousekeepingBoard {
+            <<React · MantineUI · mobile and tablet>>
         }
     }
 
-    HousekeepingGroupMapper ..> RoomState
-    HousekeepingGroupMapper ..> HousekeepingGroup
+    BoardGroupMapper ..> BoardGroup
+    AllowedActionsPolicy ..> RoomAction
     GetRoomBoardUseCase --> RoomBoardReadModel
-    GetRoomBoardUseCase --> HousekeepingGroupMapper
+    GetRoomBoardUseCase --> BoardGroupMapper
+    GetRoomBoardUseCase --> AllowedActionsPolicy
     GetRoomBoardUseCase ..> RoomBoard
-    RoomBoard *-- RoomBoardItem
-    BroadcastRoomStateOnChange ..> RoomStateChanged : handles
-    BroadcastRoomStateOnChange --> RealtimeNotifier
-    BroadcastRoomStateOnChange --> HousekeepingGroupMapper
-
+    RoomBoard *-- RoomCard
+    RoomStateChangedHandler --> BoardGroupMapper
+    RoomStateChangedHandler --> RealtimePublisher
+    ChannelsRealtimePublisher ..|> RealtimePublisher
     PostgresRoomBoardReadModel ..|> RoomBoardReadModel
-    RealtimeNotifierAdapter ..|> RealtimeNotifier
     RoomBoardView --> GetRoomBoardUseCase
-    RoomStateView --> ChangeRoomStateUseCase
-    RoomBoardStream ..> RealtimeNotifierAdapter
-
-    RoomBoardPage ..> RoomBoardView : GET /api/v1/properties/{id}/room-board
-    RoomBoardPage ..> RoomStateView : POST /api/v1/rooms/{id}/state-transitions
-    RoomBoardPage ..> RoomBoardStream : subscribe
-    FrontDeskDashboardPage ..> RoomBoardStream : subscribe
+    HousekeepingBoard ..> RoomBoardView : initial load
+    HousekeepingBoard ..> RoomBoardConsumer : live updates
 ```
 
 ### Design notes
-- **No financial data by construction (Scenario 3):**
-  - `RoomBoard` and `RoomBoardItem` have no rate, balance or guest-payment fields, and the read model does not select them;
-  - the endpoint needs only a housekeeping permission, never `FINANCIAL_DATA_ACCESS`;
-  - financial endpoints still deny Housekeepers (US-01).
-- **Grouping:** `HousekeepingGroupMapper` turns a room's state (plus whether it has an In-House reservation) into the board groups `Checkout/Dirty`, `Stayover` and `Clean`. The exact mapping is PENDING (US-18 business rules), and it lives only in this class, so the decision changes one place.
-- **Real-time (Scenario 2):**
-  - state changes go through the US-19 state machine;
-  - after commit, `BroadcastRoomStateOnChange` pushes the change to every subscriber of the property's channel (housekeeping devices and the front desk).
-- **Real-time technology is PENDING.** WebSockets (e.g., Django Channels) or Server-Sent Events are candidates, and neither is in `Tools.md`. `RealtimeNotifier` keeps the choice behind a port.
-- **Mobile/tablet:** `RoomBoardPage` is mobile-first with large touch targets (MantineUI responsive grid). Each group is a section; each room is a card with the actions its state allows.
+- **Mapping (`BoardGroupMapper`):** `AVAILABLE` → Clean; `OCCUPIED` → Stayover; `DIRTY` with the guest In-House → Stayover + "cleaning requested"; `DIRTY` after check-out → Checkout/Dirty; `CLEANING` → Checkout/Dirty; `UNAVAILABLE`, `MAINTENANCE` → Out of service.
+- **"Guest In-House"** comes from the reservation assigned to the room with status `IN_HOUSE`. The board uses it only as a boolean; no name is sent.
+- **Allowed actions** are computed on the server per user (US-19 rules); actions on Out of service rooms appear only for a Head Housekeeper or the GM. The buttons call the US-19 endpoints.
+- **Push payload** per change: room id, number, type, state, group, badge, note. Each client recomputes its own allowed actions on receipt by refetching the card, so permissions stay server-side.
+- **Consumers:** the WebSocket connection is authenticated with the staff session and joins `property.{id}.rooms` only if the property is in the user's scope.
 
 ---
 
@@ -149,105 +137,73 @@ classDiagram
 
 ```mermaid
 erDiagram
-    PROPERTY ||--o{ ROOM : "owns"
-    ROOM_TYPE ||--o{ ROOM : "classifies"
-    ROOM ||--o{ RESERVATION : "hosts"
-    ROOM ||--o{ ROOM_STATE_HISTORY : "changes through"
+    PROPERTY ||--o{ ROOM : "has"
+    ROOM_TYPE ||--o{ ROOM : "templates"
+    ROOM ||--o{ RESERVATION : "assigned to"
 
     ROOM {
         uuid id PK "US-02"
-        uuid property_id FK "filter"
-        varchar number
-        varchar state "AVAILABLE, OCCUPIED, DIRTY, CLEANING (US-19)"
-        int version
+        uuid property_id FK
+        uuid room_type_id FK
+        varchar number "sort key"
+        varchar note
+        varchar state "US-19"
+        boolean is_active
     }
     ROOM_TYPE {
         uuid id PK "US-02"
-        varchar name
+        varchar name_en
+        varchar name_fr
     }
     RESERVATION {
         uuid id PK "US-06"
         uuid room_id FK
-        varchar status "IN_HOUSE identifies a stayover candidate"
-    }
-    ROOM_STATE_HISTORY {
-        uuid id PK "US-19"
-        uuid room_id FK
-        varchar to_state
-        timestamptz changed_at "UTC"
+        varchar status "IN_HOUSE means guest in room"
     }
     PROPERTY {
-        uuid id PK "partial"
+        uuid id PK "US-02"
     }
 ```
-
-### Design notes
-- **No new table.** The board reads `ROOM`, `ROOM_TYPE` and the In-House `RESERVATION` of each room. Financial tables (`FOLIO`, `DEPOSIT_HOLD`, rates) are never joined.
-- **Index:** `ROOM (property_id, state)` keeps the board query fast on mobile connections.
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Opening the board — Scenario 1
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor HK as Housekeeper (mobile/tablet)
-    participant Page as RoomBoardPage
-    participant View as RoomBoardView<br/>GET /api/v1/properties/{id}/room-board
-    participant UC as GetRoomBoardUseCase
-    participant RM as RoomBoardReadModel
-    participant Map as HousekeepingGroupMapper
-
-    HK->>Page: Open room board
-    Page->>View: GET (housekeeping permission)
-    View->>UC: execute(property_id)
-    UC->>RM: rooms_with_occupancy(property_id)
-    RM-->>UC: rows (room, type, state, in-house flag)
-    loop each room
-        UC->>Map: group_for(state, has_in_house_reservation)
-        Map-->>UC: CHECKOUT_DIRTY / STAYOVER / CLEAN (mapping PENDING)
-    end
-    UC-->>View: RoomBoard (no financial fields)
-    View-->>Page: 200 OK
-    Page->>Page: subscribe to the property's real-time channel
-    Page-->>HK: Rooms grouped by Checkout/Dirty, Stayover, Clean
-```
-
-### 3.2 Instant update for all users — Scenario 2
+### 3.1 Live update — Scenarios 2 and 4
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor HK as Housekeeper
-    participant Page as RoomBoardPage
-    participant View as RoomStateView (US-19)
-    participant UC as ChangeRoomStateUseCase (US-19)
-    participant Bus as EventPublisher
-    participant H as BroadcastRoomStateOnChange
-    participant RT as RealtimeNotifier
-    participant Other as Other housekeeping devices
-    participant FD as Front Desk (US-10)
+    participant Board as HousekeepingBoard (other devices)
+    participant Desk as Front desk dashboard
+    participant API as Room action endpoint (US-19)
+    participant Handler as RoomStateChangedHandler
+    participant Pub as RealtimePublisher
+    participant Layer as RabbitMQ channel layer
 
-    HK->>Page: Tap "Start cleaning" on Room 101
-    Page->>View: POST state transition
-    View->>UC: execute(room 101, START_CLEANING)
-    UC->>UC: Room state machine (US-19), commit
-    UC->>Bus: publish(RoomStateChanged DIRTY to CLEANING)
-    View-->>Page: 200 OK
-    Bus->>H: after commit: handle(event)
-    H->>RT: publish("property:{id}:rooms", room 101 CLEANING)
-    par Fan-out
-        RT-->>Other: room 101 moves group
-    and
-        RT-->>FD: room 101 status updated
-    end
+    HK->>API: action (e.g., request stayover cleaning)
+    API->>API: state change committed (US-19)
+    API-->>Handler: RoomStateChanged (after commit)
+    Handler->>Pub: publish(property.{id}.rooms, room card data)
+    Pub->>Layer: group_send
+    Layer-->>Board: room moves group or shows the badge
+    Layer-->>Desk: room state updated live
+```
+
+### 3.2 Group mapping
+
+```mermaid
+flowchart LR
+    AV[Available] --> CLEAN[Clean]
+    OC[Occupied] --> STAY[Stayover]
+    DI1["Dirty, guest In-House"] --> STAYB["Stayover + cleaning requested"]
+    DI2["Dirty, after check-out"] --> CD[Checkout/Dirty]
+    CL[Cleaning] --> CD
+    UN[Unavailable] --> OOS[Out of service]
+    MA[Maintenance] --> OOS
 ```
 
 ### 3.3 Domain events
 
-| Event | Emitted by | When | Payload | Consumers |
-|---|---|---|---|---|
-| `RoomStateChanged` | `Room` (US-19) | Any room state transition (check-in, check-out, cleaning, verification) | `room_id`, `property_id`, `from_state`, `to_state`, `occurred_at_utc` | `BroadcastRoomStateOnChange` (after commit) |
+Consumes `RoomStateChanged` (US-19). Emits none.

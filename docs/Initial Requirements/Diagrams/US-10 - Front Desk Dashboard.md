@@ -1,12 +1,22 @@
 # US-10 — Front Desk Dashboard: Diagrams
 
-> Sources: `US-10-front-desk-dashboard.md`, `US-12-check-in-with-age-verification.md`, `US-13-deposit-pre-authorization-hold.md`, `docs/Business Modeling/Business Modeling.md` (Personas, Section 5), `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
-> Data is scoped per **Property** (Business Modeling, Section 5) even where the story text does not mention it.
+> Source: `US-10-front-desk-dashboard.md`. Related: US-06 (Unconfirmed), US-12 (ID, early check-in), US-13 (deposit), US-16 (violation reports), US-17 (balance), US-18 (live room states).
+
+## Business rules reflected
+
+| Rule (US-10) | Where it appears |
+|---|---|
+| Lists for the agent's property and today (local date): Arrivals, In-House, Departures, Unconfirmed, open violation reports | `DashboardSnapshot` sections |
+| Flags: missing deposit, missing ID, early check-in approval needed, Unconfirmed, outstanding balance on departure, late check-out | `RequirementFlag`, `FlagEvaluator` |
+| Auto-refresh every 60 s plus a refresh key | `useDashboard` polling, key `R` |
+| Shortcuts: ↑/↓, Enter, C, /, R, Esc | `DashboardKeyboardMap` |
+| Search by guest name, confirmation code or room number | `SearchReservationsUseCase` |
+| Agent sees own property; GM chooses | `PropertyScope` (US-01) |
+| API ≤ 1.5 s for 95% of requests (exports and external services excluded) | Read model with indexes; performance test |
 
 ---
 
-## 1. Class Diagram (Clean Architecture + Front-end)
+## 1. Class Diagram (Clean Architecture)
 
 ```mermaid
 classDiagram
@@ -17,106 +27,109 @@ classDiagram
             <<Enumeration>>
             MISSING_DEPOSIT
             MISSING_ID_VERIFICATION
+            EARLY_CHECK_IN_APPROVAL_NEEDED
+            UNCONFIRMED
+            OUTSTANDING_BALANCE
+            LATE_CHECK_OUT
         }
-        class CheckInRequirementsPolicy {
+        class FlagEvaluator {
             <<Domain Service>>
-            +missing_requirements(snapshot: CheckInSnapshot) set~RequirementFlag~
-        }
-        class CheckInSnapshot {
-            <<Value Object>>
-            +ReservationStatus status
-            +DepositHoldStatus | None deposit_status
-            +IdVerificationResult | None id_result
-            +bool age_override
+            +CHECK_IN_FROM = 16:00
+            +CHECK_OUT_BY = 11:00
+            +flags(row, now_local) set~RequirementFlag~
         }
     }
 
     namespace Application {
-        class GetFrontDeskDashboardUseCase {
+        class GetDashboardUseCase {
             <<Query Use Case>>
-            +execute(property_id: PropertyId, business_date: date) FrontDeskDashboard
+            +execute(staff, property_id) DashboardSnapshot
         }
-        class FrontDeskDashboard {
-            <<DTO>>
-            +list~DashboardReservation~ reservations
+        class SearchReservationsUseCase {
+            <<Query Use Case>>
+            +execute(staff, property_id, text) list~DashboardRow~
         }
-        class DashboardReservation {
+        class DashboardSnapshot {
             <<DTO>>
-            +UUID reservation_id
+            +date business_date
+            +list~DashboardRow~ arrivals
+            +list~DashboardRow~ in_house
+            +list~DashboardRow~ departures
+            +list~DashboardRow~ unconfirmed
+            +list~ViolationRow~ open_violations
+        }
+        class DashboardRow {
+            <<DTO>>
+            +str confirmation_code
             +str guest_name
+            +str room_number
             +str room_type
-            +str | None room_number
-            +date check_in_date
-            +date check_out_date
-            +str status
-            +list~str~ flags
+            +ReservationStatus status
+            +set~RequirementFlag~ flags
         }
-        class FrontDeskDashboardReadModel {
-            <<Port · read side>>
-            +reservations_to_handle(property_id: PropertyId, business_date: date) list~CheckInSnapshotRow~
+        class DashboardReadModel {
+            <<Port>>
+            +rows(property_id, business_date) list~ReservationFacts~
+            +open_violations(property_id) list~ViolationRow~
+            +search(property_id, text) list~ReservationFacts~
+        }
+        class Clock {
+            <<Port>>
         }
     }
 
     namespace Infrastructure {
-        class PostgresFrontDeskDashboardReadModel {
-            <<Adapter · single SQL query / view>>
+        class PostgresDashboardReadModel {
+            <<Adapter · SQL with indexes>>
         }
     }
 
     namespace Interface {
-        class FrontDeskDashboardView {
-            <<REST Controller>>
-            +get(request, property_id) Response
+        class DashboardViews {
+            <<REST · FRONT_DESK_WORK>>
+            GET /api/v1/properties/id/dashboard
+            GET /api/v1/properties/id/reservations?q=
         }
-        class RequiresPermission {
-            <<Authorization Guard · US-01>>
-            +check(request, permission: Permission) None
+        class RoomStateConsumer {
+            <<WebSocket · US-18>>
+            ws /ws/properties/id/rooms
         }
     }
 
     namespace FrontEnd {
-        class FrontDeskDashboardPage {
-            <<React Component · MantineUI>>
-            +rows: DashboardReservation[]
-            +selectedIndex: number
-        }
-        class RequirementBadge {
-            <<React Component>>
-            +flag: RequirementFlag
-        }
-        class KeyboardShortcuts {
-            <<Hook · Mantine useHotkeys>>
-            +bind(shortcut: string, action: Function) void
+        class FrontDeskDashboard {
+            <<React · MantineUI>>
+            +refetch every 60 s
+            +keys Up Down Enter C slash R Esc
         }
     }
 
-    CheckInRequirementsPolicy ..> CheckInSnapshot
-    CheckInRequirementsPolicy ..> RequirementFlag
-    GetFrontDeskDashboardUseCase --> FrontDeskDashboardReadModel
-    GetFrontDeskDashboardUseCase --> CheckInRequirementsPolicy
-    GetFrontDeskDashboardUseCase ..> FrontDeskDashboard
-    FrontDeskDashboard *-- DashboardReservation
-    PostgresFrontDeskDashboardReadModel ..|> FrontDeskDashboardReadModel
-    FrontDeskDashboardView --> RequiresPermission : FRONT_DESK_ACCESS
-    FrontDeskDashboardView --> GetFrontDeskDashboardUseCase
-
-    FrontDeskDashboardPage --> RequirementBadge
-    FrontDeskDashboardPage --> KeyboardShortcuts
-    FrontDeskDashboardPage ..> FrontDeskDashboardView : GET /api/v1/properties/{id}/front-desk/dashboard
+    GetDashboardUseCase --> DashboardReadModel
+    GetDashboardUseCase --> FlagEvaluator
+    GetDashboardUseCase --> Clock
+    GetDashboardUseCase ..> DashboardSnapshot
+    DashboardSnapshot *-- DashboardRow
+    DashboardRow --> RequirementFlag
+    SearchReservationsUseCase --> DashboardReadModel
+    PostgresDashboardReadModel ..|> DashboardReadModel
+    DashboardViews --> GetDashboardUseCase
+    DashboardViews --> SearchReservationsUseCase
+    FrontDeskDashboard ..> DashboardViews : poll 60 s
+    FrontDeskDashboard ..> RoomStateConsumer : live room states
 ```
 
 ### Design notes
-- **CQRS-style read side:** the dashboard is a query, not a domain operation. `FrontDeskDashboardReadModel` reads everything in **one** SQL query (or database view) joining reservation, guest, room, ID verification and deposit hold, so the screen is fast (business document: "extreme efficiency").
-- **Flags are computed in the domain** (`CheckInRequirementsPolicy`), not in SQL or React, so the same rule can also block the check-in itself (US-13):
-  - `MISSING_ID_VERIFICATION`: no successful ID verification (US-12) and no management override;
-  - `MISSING_DEPOSIT`: no authorized deposit hold (US-13).
-- **Which reservations appear (PENDING):** the full dashboard content (arrivals, in-house, departures) and any extra flags are undefined. Flags apply to reservations that are not yet In-House, because both requirements belong to check-in.
-- **Keyboard-friendly (Scenario 3):**
-  - **Navigate:** `↑`/`↓` move the selected row;
-  - **Act:** `Enter` opens it, `C` starts check-in, `/` focuses the search, `R` refreshes;
-  - this shortcut set is a UI proposal to confirm, implemented with MantineUI's `useHotkeys`.
-- **Response-time targets** are PENDING.
-- **Permission:** a `FRONT_DESK_ACCESS` permission is added to the role-permission matrix (US-01).
+- **Flag rules (`FlagEvaluator`):**
+  - `MISSING_DEPOSIT`: arrival or In-House without an authorized card hold and without a cash deposit (US-13).
+  - `MISSING_ID_VERIFICATION`: arrival without a successful ID check (US-12).
+  - `EARLY_CHECK_IN_APPROVAL_NEEDED`: arrival, local time before 4:00 PM, no approval (US-12).
+  - `UNCONFIRMED`: status `UNCONFIRMED` (US-06).
+  - `OUTSTANDING_BALANCE`: departure with folio balance ≠ $0.00 (US-17).
+  - `LATE_CHECK_OUT`: departure still `IN_HOUSE` after 11:00 AM local time.
+- **Business date** = the property's local date from the `Clock`.
+- **Scope:** a Front Desk Agent's `property_id` must equal their own; the GM can pass any property.
+- **Performance:** one query per section, using the indexes below, keeps the request under the 1.5 s p95 target.
+- **Room states** on the dashboard also update live through the WebSocket of US-18; the 60-second polling refreshes everything else.
 
 ---
 
@@ -124,94 +137,73 @@ classDiagram
 
 ```mermaid
 erDiagram
-    RESERVATION ||--|| GUEST_PROFILE : "belongs to"
-    RESERVATION }o--|| ROOM_TYPE : "is booked as"
-    RESERVATION }o--o| ROOM : "is assigned"
-    RESERVATION ||--o| ID_VERIFICATION : "has"
-    RESERVATION ||--o{ DEPOSIT_HOLD : "has"
+    RESERVATION ||--|| FOLIO : "has"
+    RESERVATION ||--o{ DEPOSIT : "secured by"
+    RESERVATION ||--o| ID_VERIFICATION : "verified by"
+    ROOM ||--o{ VIOLATION_REPORT : "reported in"
+    RESERVATION }o--o| ROOM : "assigned"
 
     RESERVATION {
         uuid id PK "US-06"
-        uuid property_id FK "filter"
-        varchar status "US-11"
-        date check_in_date "filter"
-        date check_out_date
+        uuid property_id FK
+        varchar status
+        date check_in_date "index with property_id"
+        date check_out_date "index with property_id"
+        uuid early_check_in_approved_by FK "US-12"
     }
-    GUEST_PROFILE {
-        uuid id PK "US-20"
-        varchar full_name
+    DEPOSIT {
+        uuid id PK "US-13"
+        varchar kind "CARD_HOLD or CASH"
+        varchar status
     }
-    ROOM_TYPE {
-        uuid id PK "US-02"
-        varchar name
+    ID_VERIFICATION {
+        uuid reservation_id PK, FK "US-12"
+        varchar result
+    }
+    FOLIO {
+        uuid id PK "US-15"
+        numeric balance "maintained by the ledger"
+    }
+    VIOLATION_REPORT {
+        uuid id PK "US-16"
+        varchar status "OPEN shown"
     }
     ROOM {
         uuid id PK "US-02"
         varchar number
-    }
-    ID_VERIFICATION {
-        uuid id PK "US-12"
-        uuid reservation_id FK
-        varchar result "ELIGIBLE, UNDERAGE"
-        boolean overridden
-    }
-    DEPOSIT_HOLD {
-        uuid id PK "US-13"
-        uuid reservation_id FK
-        varchar status "AUTHORIZED, DECLINED, ..."
+        varchar state
     }
 ```
-
-### Design notes
-- **No new table.** The dashboard reads the tables owned by US-02, US-06, US-12, US-13 and US-20.
-- **Index:** `RESERVATION (property_id, check_in_date, status)` supports the main filter.
-- **Database view:** the query can live in a view such as `front_desk_dashboard_v` so the read model stays a single, testable SQL statement.
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Opening the dashboard — Scenarios 1 and 2
+### 3.1 Loading, auto-refresh and keyboard — Scenarios 1 to 5
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Agent as Front Desk Agent
-    participant Page as FrontDeskDashboardPage
-    participant View as FrontDeskDashboardView<br/>GET /api/v1/properties/{id}/front-desk/dashboard
-    participant UC as GetFrontDeskDashboardUseCase
-    participant RM as FrontDeskDashboardReadModel
-    participant Policy as CheckInRequirementsPolicy
+    actor FDA as Front Desk Agent
+    participant UI as FrontDeskDashboard
+    participant View as DashboardViews
+    participant UC as GetDashboardUseCase
+    participant RM as DashboardReadModel
+    participant Flags as FlagEvaluator
 
-    Agent->>Page: Open dashboard
-    Page->>View: GET (property, business date)
-    View->>UC: execute(property_id, business_date)
-    UC->>RM: reservations_to_handle(property_id, business_date)
-    RM-->>UC: rows (reservation, guest, room, ID result, hold status)
-    loop each reservation
-        UC->>Policy: missing_requirements(snapshot)
-        Policy-->>UC: flags, e.g., MISSING_DEPOSIT
+    FDA->>UI: opens the dashboard
+    loop on open, every 60 seconds, or key R
+        UI->>View: GET /properties/{id}/dashboard
+        View->>UC: execute(staff, property_id)
+        UC->>RM: rows(property, local business date)
+        loop each reservation
+            UC->>Flags: flags(row, now local)
+        end
+        UC-->>UI: Arrivals, In-House, Departures, Unconfirmed, open violations
     end
-    UC-->>View: FrontDeskDashboard
-    View-->>Page: 200 OK
-    Page-->>Agent: Reservations with state, missing requirements highlighted with RequirementBadge
+    FDA->>UI: Up and Down, Enter opens, C starts check-in, slash searches, Esc goes back
 ```
 
-### 3.2 Keyboard navigation — Scenario 3
+### 3.2 Domain events
 
-```mermaid
-stateDiagram-v2
-    [*] --> ListFocused: page loads
-    ListFocused --> ListFocused: Up / Down moves selection
-    ListFocused --> SearchFocused: "/"
-    SearchFocused --> ListFocused: Esc or Enter
-    ListFocused --> ReservationOpen: Enter
-    ReservationOpen --> CheckInFlow: C (US-12, US-13)
-    ReservationOpen --> ListFocused: Esc
-    CheckInFlow --> ListFocused: completed or Esc
-    ListFocused --> ListFocused: R refreshes data
-```
-
-### 3.3 Domain events
-
-No domain event is emitted; this story is read-only. Data freshness comes from reloading (`R` or periodic refresh). Pushing live updates to the dashboard is PENDING.
+None emitted. The dashboard reads data produced by US-06, US-12, US-13, US-16, US-17 and room-state events from US-19 (pushed through US-18).

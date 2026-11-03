@@ -1,8 +1,21 @@
 # US-13 — Deposit Pre-Authorization Hold: Diagrams
 
-> Sources: `US-13-deposit-pre-authorization-hold.md`, `US-12-check-in-with-age-verification.md`, `US-19-room-state-machine-and-cleaning-verification.md`, `docs/Business Modeling/Business Modeling.md` (Phase 2, Section 4), `CLAUDE.md`.
-> Elements tagged **PENDING** depend on business rules not defined yet. They are placeholders in the design, not decisions.
-> Data is scoped per **Property** (Business Modeling, Section 5) even where the story text does not mention it.
+> Source: `US-13-deposit-pre-authorization-hold.md`. Related: US-01 (password lockout), US-06 (card kept by Stripe), US-12 (ID and early check-in), US-15 (folio), US-16 and US-17 (fines and check-out), US-19 (room state).
+
+## Business rules reflected
+
+| Rule (US-13) | Where it appears |
+|---|---|
+| Deposit is a Stripe pre-authorization hold; amount per property set by the GM; default $250 CAD | `PROPERTY.deposit_amount`, `PaymentGateway.authorize_hold()` |
+| Order: ID → early approval → deposit → room assignment → confirmation; no deposit before the ID check | `CheckInProcess` guards, flowchart 3.1 |
+| Hold on the card kept at booking; guests without a card enter one in Stripe fields or leave cash | `PlaceDepositUseCase` with `saved` or `new` PaymentMethod |
+| Declined hold: try another card or take cash; check-in blocked until one succeeds | `DepositDeclined`, Scenario 2 |
+| Cash deposit for the property's amount, confirmed with the agent's own password, recorded in the folio | `RecordCashDepositUseCase`, `CASH_DEPOSIT_RECEIVED` entry |
+| Failed password confirmation counts toward the US-01 lockout | `StaffUser.register_failed_login()` |
+| At check-out the cash deposit is returned in cash minus fines, recorded in the folio | US-17, `CASH_DEPOSIT_RETURNED` entry |
+| No hold renewal | No renewal job |
+| FDA assigns an Available room of the booked type | `AssignRoomUseCase`, Scenario 4 |
+| Check-in sets In-House and Occupied | `CompleteCheckInUseCase`, Scenario 5 |
 
 ---
 
@@ -13,298 +26,217 @@ classDiagram
     direction LR
 
     namespace Domain {
-        class DepositHold {
-            <<Entity / Aggregate Root>>
-            -DepositHoldId id
-            -ReservationId reservation_id
-            -Money amount
-            -DepositHoldStatus status
-            -str | None gateway_authorization_id
-            -Money captured_amount
-            +request(reservation_id, amount)$ DepositHold
-            +mark_authorized(authorization_id: str) None
-            +mark_declined(reason: str) None
-            +mark_captured(amount: Money) None
-            +mark_released() None
-        }
-        class DepositHoldStatus {
+        class DepositKind {
             <<Enumeration>>
-            REQUESTED
-            AUTHORIZED
-            DECLINED
-            CAPTURED
+            CARD_HOLD
+            CASH
+        }
+        class DepositStatus {
+            <<Enumeration>>
+            HELD
+            RELEASE_PENDING
             RELEASED
+            CAPTURED
+            RETURNED
         }
-        class DepositPolicy {
-            <<Domain Service>>
-            +HOLD_AMOUNT = Money(250.00, CAD)
+        class Deposit {
+            <<Entity>>
+            +DepositId id
+            +ReservationId reservation_id
+            +DepositKind kind
+            +Money amount
+            +Money captured
+            +DepositStatus status
+            +str stripe_payment_intent_id
+            +StaffId placed_by
         }
-        class CheckInService {
+        class CheckInProcess {
             <<Domain Service>>
-            +check_in(reservation, room, id_verification, hold) None
+            +assert_can_take_deposit(reservation) None
+            +assert_can_assign_room(reservation) None
+            +assert_can_complete(reservation) None
         }
         class Reservation {
-            <<Entity · US-06 / US-11>>
-            +check_in(room_id: RoomId) None
+            <<Aggregate Root · US-06>>
+            +check_in(room) None
         }
         class Room {
-            <<Entity · US-02 / US-19>>
+            <<Aggregate Root · US-19>>
             +occupy() None
-        }
-        class DepositHoldAuthorized {
-            <<Domain Event>>
-            +ReservationId reservation_id
-            +Money amount
-            +datetime occurred_at_utc
-        }
-        class DepositHoldDeclined {
-            <<Domain Event>>
-            +ReservationId reservation_id
-            +datetime occurred_at_utc
-        }
-        class GuestCheckedIn {
-            <<Domain Event>>
-            +ReservationId reservation_id
-            +RoomId room_id
-            +datetime occurred_at_utc
-        }
-        class CheckInRequirementsNotMetError {
-            <<Domain Exception>>
         }
     }
 
     namespace Application {
-        class PlaceDepositHoldUseCase {
-            <<Use Case>>
-            +execute(reservation_id: ReservationId) DepositHoldView
+        class PlaceDepositUseCase {
+            +execute(reservation_id, payment_method_id, agent) Deposit
+        }
+        class RecordCashDepositUseCase {
+            +execute(reservation_id, agent, password) Deposit
+        }
+        class AssignRoomUseCase {
+            +execute(reservation_id, room_id, agent) None
         }
         class CompleteCheckInUseCase {
-            <<Use Case>>
-            +execute(command: CompleteCheckInCommand) None
-        }
-        class CompleteCheckInCommand {
-            <<DTO>>
-            +UUID reservation_id
-            +UUID room_id
-            +UUID staff_member_id
+            +execute(reservation_id, agent) None
         }
         class PaymentGateway {
-            <<Port · Stripe, PENDING>>
-            +authorize(token: PaymentMethodToken, amount: Money, idempotency_key: str) AuthorizationResult
-            +capture(authorization_id: str, amount: Money, idempotency_key: str) CaptureResult
-            +release(authorization_id: str, idempotency_key: str) None
-        }
-        class DepositHoldRepository {
             <<Port>>
-            +add(hold: DepositHold) None
-            +save(hold: DepositHold) None
-            +get_active_for_reservation(reservation_id: ReservationId) DepositHold | None
+            +authorize_hold(customer, payment_method, amount, key) HoldResult
         }
-        class ReservationRepository {
-            <<Port · US-06>>
-            +get_by_id(reservation_id) Reservation
-            +save(reservation) None
+        class PasswordConfirmation {
+            <<US-01>>
+            +confirm(agent, password) None
         }
-        class RoomRepository {
-            <<Port · US-02>>
-            +get_by_id(room_id) Room
-            +save(room) None
+        class FolioService {
+            <<US-15>>
         }
-        class IdVerificationRepository {
-            <<Port · US-12>>
-            +get_by_reservation(reservation_id) IdVerification
-        }
-        class UnitOfWork {
-            <<Port>>
-            +commit() None
-        }
-        class EventPublisher {
-            <<Port>>
-            +publish(event: DomainEvent) None
+        class RealtimePublisher {
+            <<Port · US-18>>
         }
     }
 
     namespace Infrastructure {
-        class GatewayPaymentAdapter {
-            <<Adapter · PENDING gateway>>
-        }
-        class DjangoDepositHoldRepository {
-            <<Adapter>>
+        class StripePaymentGateway {
+            <<PaymentIntent capture_method manual>>
         }
     }
 
     namespace Interface {
-        class DepositHoldView {
-            <<REST Controller>>
-            +post(request, reservation_id) Response
-        }
-        class CheckInView {
-            <<REST Controller>>
-            +post(request, reservation_id) Response
+        class CheckInStepViews {
+            <<REST · FRONT_DESK_WORK>>
+            POST /api/v1/reservations/id/deposit
+            POST /api/v1/reservations/id/cash-deposit
+            POST /api/v1/reservations/id/room
+            POST /api/v1/reservations/id/check-in
         }
     }
 
-    DepositHold --> DepositHoldStatus
-    DepositHold ..> DepositPolicy : amount from
-    DepositHold ..> DepositHoldAuthorized : records
-    DepositHold ..> DepositHoldDeclined : records
-    CheckInService ..> Reservation
-    CheckInService ..> Room
-    CheckInService ..> CheckInRequirementsNotMetError : raises
-    CheckInService ..> GuestCheckedIn : records
-
-    PlaceDepositHoldUseCase --> PaymentGateway
-    PlaceDepositHoldUseCase --> DepositHoldRepository
-    PlaceDepositHoldUseCase --> ReservationRepository
-    PlaceDepositHoldUseCase --> EventPublisher
-    CompleteCheckInUseCase ..> CompleteCheckInCommand
-    CompleteCheckInUseCase --> CheckInService
-    CompleteCheckInUseCase --> ReservationRepository
-    CompleteCheckInUseCase --> RoomRepository
-    CompleteCheckInUseCase --> IdVerificationRepository
-    CompleteCheckInUseCase --> DepositHoldRepository
-    CompleteCheckInUseCase --> UnitOfWork
-    CompleteCheckInUseCase --> EventPublisher
-
-    GatewayPaymentAdapter ..|> PaymentGateway
-    DjangoDepositHoldRepository ..|> DepositHoldRepository
-    DepositHoldView --> PlaceDepositHoldUseCase
-    CheckInView --> CompleteCheckInUseCase
+    Deposit --> DepositKind
+    Deposit --> DepositStatus
+    PlaceDepositUseCase --> CheckInProcess
+    PlaceDepositUseCase --> PaymentGateway
+    RecordCashDepositUseCase --> CheckInProcess
+    RecordCashDepositUseCase --> PasswordConfirmation
+    RecordCashDepositUseCase --> FolioService
+    AssignRoomUseCase --> CheckInProcess
+    CompleteCheckInUseCase --> CheckInProcess
+    CompleteCheckInUseCase ..> Reservation
+    CompleteCheckInUseCase ..> Room
+    CompleteCheckInUseCase --> RealtimePublisher
+    StripePaymentGateway ..|> PaymentGateway
+    CheckInStepViews --> PlaceDepositUseCase
+    CheckInStepViews --> RecordCashDepositUseCase
+    CheckInStepViews --> AssignRoomUseCase
+    CheckInStepViews --> CompleteCheckInUseCase
 ```
 
 ### Design notes
-- **`DepositHold` has its own lifecycle** (`REQUESTED → AUTHORIZED | DECLINED`, later `CAPTURED` in US-16 or `RELEASED` in US-17). The amount comes from `DepositPolicy` ($250.00 CAD as `Money`). Whether the amount differs per property is PENDING (Business Modeling, Section 5).
-- **Gateway calls are idempotent:** every `PaymentGateway` call carries an idempotency key derived from the hold id, so a network retry never places two holds.
-- **The hold is recorded before the gateway call** (status `REQUESTED`). This leaves a trace even if the process stops mid-call, so the hold can be reconciled.
-- **`CheckInService` enforces all check-in requirements together (Scenario 3):**
-  - the reservation is `CONFIRMED`;
-  - the ID verification allows check-in (US-12, eligible or overridden);
-  - the hold is `AUTHORIZED`;
-  - the room is `AVAILABLE` (US-19).
-
-  Then `Reservation` changes to `IN_HOUSE` and `Room` to `OCCUPIED` in a single transaction.
-- **A declined hold (Scenario 2)** leaves the reservation without an authorized hold. The dashboard (US-10) then shows `MISSING_DEPOSIT`, and `CheckInService` refuses to complete the check-in.
-- **Folio:** a hold is not a payment. A payment entry is posted only when funds are captured (US-16).
-- **PENDING:**
-  - guests without a credit card (e.g., cash);
-  - hold expiration on long stays;
-  - when and how the physical room is assigned (here the agent sends `room_id` at completion).
+- **Guards (`CheckInProcess`):** the deposit needs a `PASSED` or `OVERRIDDEN` ID verification and, before 4:00 PM, an early check-in approval (US-12); room assignment needs a `HELD` deposit (card or cash); completion needs an assigned room.
+- **Card hold:** a Stripe PaymentIntent with `capture_method = manual` for the property's `deposit_amount`, on the PaymentMethod kept at booking (US-06), or on a new one entered in Stripe fields at check-in (OTA guests, cash walk-ins). A hold is **not** a folio entry; only a capture becomes one (US-16, US-17).
+- **Cash deposit:** the agent's password is checked by `PasswordConfirmation`; a wrong password increments the same counter as a failed login and can lock the account (US-01). The deposit posts `CASH_DEPOSIT_RECEIVED` (debit cash, credit cash deposits held, US-15).
+- **Room assignment:** the room must be active, `AVAILABLE`, of the booked room type and at the agent's property; the optimistic lock on `ROOM.version` prevents two agents from taking the same room.
+- **Completion:** in one transaction, the reservation goes `CONFIRMED → IN_HOUSE` (US-11) and the room `AVAILABLE → OCCUPIED` (US-19); after commit, the room state is pushed to the housekeeping board and dashboard (US-18).
 
 ---
 
-## 2. ER Diagram (PostgreSQL persistence)
+## 2. ER Diagram
 
 ```mermaid
 erDiagram
-    RESERVATION ||--o{ DEPOSIT_HOLD : "is secured by"
-    RESERVATION }o--o| ROOM : "is assigned"
+    PROPERTY ||--o{ RESERVATION : "receives"
+    RESERVATION ||--o{ DEPOSIT : "secured by"
+    RESERVATION }o--o| ROOM : "assigned"
+    DEPOSIT ||--o{ LEDGER_ENTRY : "cash and captures posted as"
 
-    DEPOSIT_HOLD {
-        uuid id PK "also the gateway idempotency key"
+    PROPERTY {
+        uuid id PK "US-02"
+        numeric deposit_amount "default 250.00"
+        char deposit_currency "CAD"
+    }
+    DEPOSIT {
+        uuid id PK
         uuid reservation_id FK
-        numeric amount "numeric(12,2), 250.00"
-        char currency "CAD"
-        varchar status "REQUESTED, AUTHORIZED, DECLINED, CAPTURED, RELEASED"
-        varchar gateway_authorization_id "UNIQUE, nullable until authorized"
-        numeric captured_amount "numeric(12,2), default 0"
-        varchar decline_reason "nullable"
-        timestamptz requested_at "UTC"
-        timestamptz authorized_at "UTC, nullable"
-        timestamptz expires_at "PENDING: long stays"
-        timestamptz released_at "UTC, nullable"
+        varchar kind "CARD_HOLD or CASH"
+        numeric amount
+        numeric captured_amount
+        char currency
+        varchar status "HELD, RELEASE_PENDING, RELEASED, CAPTURED, RETURNED"
+        varchar stripe_payment_intent_id "CARD_HOLD only"
+        int release_attempts "US-17"
+        uuid placed_by FK
+        timestamptz placed_at
+        timestamptz closed_at
     }
     RESERVATION {
-        uuid id PK "partial: US-06"
-        varchar status "IN_HOUSE after check-in"
-        uuid room_id FK "set at check-in, assignment rules PENDING"
-        int version
+        uuid id PK "US-06"
+        uuid room_id FK "set at room assignment"
+        timestamptz checked_in_at
+        uuid checked_in_by FK
     }
     ROOM {
-        uuid id PK "partial: US-02"
-        varchar state "OCCUPIED after check-in, US-19"
+        uuid id PK "US-02"
+        varchar state "AVAILABLE to OCCUPIED"
         int version
     }
+    LEDGER_ENTRY {
+        uuid id PK "US-15"
+        uuid deposit_id FK
+        varchar entry_type "CASH_DEPOSIT_RECEIVED, CASH_DEPOSIT_RETURNED, DEPOSIT_CAPTURED"
+    }
 ```
-
-### Design notes
-- **One active hold per reservation:** a partial unique index enforces it (`UNIQUE (reservation_id) WHERE status IN ('REQUESTED','AUTHORIZED')`). Declined attempts remain as history.
-- **Money columns:** amounts use `numeric(12,2)` with a currency column, following US-04.
-- **Concurrency:** `RESERVATION.version` and `ROOM.version` stop two agents from checking different guests into the same room at the same time.
 
 ---
 
 ## 3. Event Flow
 
-### 3.1 Placing the hold — Scenarios 1 and 2
+### 3.1 Check-in steps — Scenarios 1 to 5
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor Agent as Front Desk Agent
-    participant View as DepositHoldView<br/>POST /api/v1/reservations/{id}/deposit-hold
-    participant UC as PlaceDepositHoldUseCase
-    participant Repo as DepositHoldRepository
-    participant GW as PaymentGateway
-    participant Bus as EventPublisher
-
-    Agent->>View: Request deposit hold (ID already verified, US-12)
-    View->>UC: execute(reservation_id)
-    UC->>Repo: add(DepositHold REQUESTED, 250.00 CAD)
-    UC->>GW: authorize(token, 250.00 CAD, idempotency_key = hold id)
-    alt Approved (Scenario 1)
-        GW-->>UC: authorization_id
-        UC->>UC: hold.mark_authorized(authorization_id)
-        UC->>Repo: save(hold)
-        UC->>Bus: publish(DepositHoldAuthorized)
-        UC-->>View: AUTHORIZED
-        View-->>Agent: 201 Created, hold of 250.00 CAD placed
-    else Declined (Scenario 2)
-        GW-->>UC: declined (reason)
-        UC->>UC: hold.mark_declined(reason)
-        UC->>Repo: save(hold)
-        UC->>Bus: publish(DepositHoldDeclined)
-        UC-->>View: DECLINED
-        View-->>Agent: 402 Payment Required, missing deposit flagged, check-in cannot complete
-    end
+flowchart TD
+    A["1. ID verified (US-12)"] --> B{"2. Before 4 PM?"}
+    B -- yes --> B1["Early check-in approved (US-12)"]
+    B -- no --> C
+    B1 --> C{"3. Deposit"}
+    C -- card --> D["Stripe hold for the property amount<br/>on the kept card or a new card"]
+    D --> E{Approved?}
+    E -- no --> C
+    E -- yes --> F
+    C -- cash --> G["Agent enters own password<br/>cash deposit posted to the folio"]
+    G --> H{Password correct?}
+    H -- no --> G2["Failure counts toward the US-01 lockout"]
+    G2 --> C
+    H -- yes --> F["4. Assign an Available room of the booked type"]
+    F --> I["5. Confirm: reservation In-House, room Occupied"]
 ```
 
-### 3.2 Completing the check-in — Scenario 3
+### 3.2 Card hold — Scenarios 1 and 2
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Agent as Front Desk Agent
-    participant View as CheckInView<br/>POST /api/v1/reservations/{id}/check-in
-    participant UC as CompleteCheckInUseCase
-    participant Svc as CheckInService
-    participant Repos as Reservation, Room, IdVerification, DepositHold repositories
-    participant UoW as UnitOfWork
-    participant Bus as EventPublisher
+    actor FDA as Front Desk Agent
+    participant View as CheckInStepViews
+    participant UC as PlaceDepositUseCase
+    participant Pay as PaymentGateway
 
-    Agent->>View: Hand over keys, confirm check-in {room_id}
-    View->>UC: execute(command)
-    UC->>Repos: load reservation, room, ID verification, active hold
-    Repos-->>UC: aggregates
-    UC->>Svc: check_in(reservation, room, id_verification, hold)
-    alt Any requirement missing
-        Svc-->>UC: raise CheckInRequirementsNotMetError (which ones)
-        UC-->>View: error
-        View-->>Agent: 409 Conflict with the missing requirements
-    else All requirements met
-        Svc->>Svc: reservation.check_in(room_id) to IN_HOUSE
-        Svc->>Svc: room.occupy() to OCCUPIED
-        UC->>Repos: save reservation and room (version check)
-        UC->>Bus: publish(GuestCheckedIn)
-        UC->>UoW: commit
-        UC-->>View: done
-        View-->>Agent: 200 OK, reservation In-House, room Occupied
+    FDA->>View: POST deposit (kept card or new card from Stripe fields)
+    View->>UC: execute(reservation_id, payment_method_id, agent)
+    UC->>UC: guard: ID verified, early approval if needed
+    UC->>Pay: authorize_hold(property deposit amount, idempotency key)
+    alt declined
+        Pay-->>UC: declined
+        UC-->>FDA: 402 declined, deposit still missing, try another card or cash
+    else approved
+        UC->>UC: Deposit CARD_HOLD, HELD
+        UC-->>FDA: 201 deposit placed, continue to room assignment
     end
 ```
 
 ### 3.3 Domain events
 
-| Event | Emitted by | When | Payload | Consumers |
-|---|---|---|---|---|
-| `DepositHoldAuthorized` | `PlaceDepositHoldUseCase` | Gateway approves the hold | `reservation_id`, `amount`, `occurred_at_utc` | Dashboard flag cleared (US-10, read side) |
-| `DepositHoldDeclined` | `PlaceDepositHoldUseCase` | Gateway declines the hold | `reservation_id`, `occurred_at_utc` | Dashboard flag kept (US-10, read side) |
-| `GuestCheckedIn` | `CompleteCheckInUseCase` | Check-in completed | `reservation_id`, `room_id`, `occurred_at_utc` | `ReservationStatusChanged` history (US-11); `RoomStateChanged` and real-time housekeeping board (US-18, US-19) |
+| Event | Raised when | Consumers |
+|---|---|---|
+| `DepositHeld` | Card hold approved or cash deposit recorded | Dashboard flag (US-10) |
+| `DepositDeclined` | Stripe declines the hold | Dashboard flag (US-10) |
+| `RoomAssigned` | Room chosen | Check-in screen |
+| `GuestCheckedIn` | Check-in completed | Reservation history (US-11), room state (US-19), housekeeping board (US-18), Night Audit (US-14) |
