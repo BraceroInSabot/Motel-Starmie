@@ -1,0 +1,119 @@
+[project]
+name = "starmie-backend"
+version = "0.1.0"
+description = "Starmie Motel PMS backend"
+authors = [
+    {name = "Guilherme Bracero", email = "guibragon@gmail.com"}
+]
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "django (>=5.2,<5.3)",
+    "djangorestframework (>=3.18.3,<4.0.0)",
+    "drf-spectacular (>=0.30.0,<0.31.0)",
+    "channels (>=4.3.2,<5.0.0)",
+    "channels-rabbitmq (>=4.0.1,<5.0.0)",
+    "daphne (>=4.2.3,<5.0.0)",
+    "psycopg[binary] (>=3.3.7,<4.0.0)",
+    "dj-database-url (>=3.1.2,<4.0.0)",
+    "argon2-cffi (>=25.1.0,<26.0.0)"
+]
+
+[tool.poetry]
+package-mode = false
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "ruff (>=0.17.3,<0.18.0)",
+    "import-linter (>=2.15,<3.0)",
+    "pytest (>=9.2.0,<10.0.0)",
+    "pytest-django (>=4.14.0,<5.0.0)",
+    "pytest-cov (>=7.1.0,<8.0.0)",
+    "factory-boy (>=3.3.3,<4.0.0)",
+    "freezegun (>=1.5.5,<2.0.0)",
+    "pre-commit (>=4.7.0,<5.0.0)",
+    "django-stubs[compatible-mypy] (>=5.2.9,<5.3.0)",
+    "djangorestframework-stubs (<3.18.2)"
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["*/migrations/*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "S", "DJ", "PL", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"*/tests/*" = ["S101", "S105", "S106", "PLR2004"]
+"config/settings/*" = ["S105"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["starmie", "config"]
+
+[tool.mypy]
+python_version = "3.13"
+plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+exclude = ["/migrations/"]
+
+[[tool.mypy.overrides]]
+module = ["starmie.*.domain.*", "starmie.*.application.*"]
+strict = true
+disallow_any_explicit = true
+
+[[tool.mypy.overrides]]
+module = ["channels.*", "channels_rabbitmq.*", "daphne.*", "factory.*", "dj_database_url"]
+ignore_missing_imports = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings.test"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+python_files = ["test_*.py"]
+testpaths = ["starmie", "config"]
+addopts = "--strict-markers --cov=starmie --cov=config --cov-branch --cov-report=term-missing --cov-fail-under=85"
+markers = [
+    "stripe: integration tests that call Stripe test mode (skipped without a test key)",
+]
+
+[tool.coverage.run]
+omit = ["*/migrations/*", "*/tests/*", "config/asgi.py", "config/settings/dev.py", "manage.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.importlinter]
+root_package = "starmie"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Domain layers are framework-free"
+type = "forbidden"
+source_modules = ["starmie.*.domain"]
+forbidden_modules = ["django", "rest_framework", "channels", "stripe", "drf_spectacular"]
+
+[[tool.importlinter.contracts]]
+name = "Application layers do not import frameworks"
+type = "forbidden"
+source_modules = ["starmie.*.application"]
+forbidden_modules = ["django", "rest_framework", "channels", "stripe", "drf_spectacular"]
+
+[[tool.importlinter.contracts]]
+name = "Layers depend inward only"
+type = "layers"
+containers = ["starmie.shared", "starmie.identity"]
+layers = ["interface", "infrastructure", "application", "domain"]
+exhaustive = false
+
+[[tool.importlinter.contracts]]
+name = "Modules do not import each other's infrastructure"
+type = "independence"
+modules = ["starmie.identity.infrastructure", "starmie.shared.infrastructure"]
