@@ -21,3 +21,6 @@ _replaced/
 .idea/
 .vscode/
 .DS_Store
+
+# Added by ggshield
+.cache_ggshield
