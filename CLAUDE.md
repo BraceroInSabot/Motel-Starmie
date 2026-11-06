@@ -21,7 +21,8 @@
 - Responses must always keep a **technical tone**.
 - **Golden rule about the business:** business rules come only from the user stories and the documents above. **When in doubt, ASK. Never design, assume or invent business rules.**
 - The business **has no color palette, logo or visual identity**. Use the default MantineUI theme until instructed otherwise.
-- Never create git commits, branches or pushes.
+- Never create git commits, branches or pushes in this repository.
+- Only exception: the GitHub Wiki (`Motel-Starmie.wiki.git`). Claude may commit and push wiki pages only when the project owner asks for a wiki update in that same request.
 
 ---
 

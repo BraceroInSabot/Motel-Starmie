@@ -202,7 +202,6 @@ motel-starmie/
 │   ├── Tech Stack/
 │   ├── Tech Spec/                 # this document
 │   ├── Initial Requirements/      # user stories + Diagrams
-│   ├── Wiki/                      # one page per module (see 5.5)
 │   └── ADR/                       # architecture decision records
 ├── backend/
 │   ├── pyproject.toml             # Poetry: dependencies, ruff, mypy, pytest
@@ -549,14 +548,14 @@ The item is done when **every applicable** point below is true:
 | # | Update | When |
 |---|---|---|
 | 1 | OpenAPI schema regenerated (`make schema`), endpoints, errors and permissions described | Any API change |
-| 2 | `docs/Wiki/<module>.md` updated: purpose, endpoints, domain events, scheduled jobs, environment variables, how to test the story manually | Any change in that module |
+| 2 | GitHub Wiki page of the module updated: purpose, endpoints, domain events, scheduled jobs, environment variables, how to test the story manually | Any change in that module |
 | 3 | The story's diagram file in `docs/Initial Requirements/Diagrams/` updated when the implemented model differs from it | Design change |
 | 4 | `.env.example` and section 2.4 updated | New or changed environment variable |
 | 5 | An ADR in `docs/ADR/NNNN-title.md` (context, decision, consequences) | An architecture or technology decision (e.g., a new library) |
 | 6 | `CHANGELOG.md` entry under "Unreleased" | Every PR |
 | 7 | EN and FR translations added for every new text | Any UI, email or PDF text |
 
-"Wiki" therefore means the `docs/Wiki/` folder in the repository, versioned with the code, so documentation is reviewed in the same Pull Request.
+"Wiki" therefore means the repository's **GitHub Wiki** (decision 10, section 7): one page per module, plus a sidebar. The wiki is a separate git repository (`Motel-Starmie.wiki.git`) and is not reviewed in the Pull Request, so the PR description links the wiki pages it changed. Claude commits and pushes wiki pages only when the project owner asks for it in that request (CLAUDE.md, section 1).
 
 ---
 
@@ -589,6 +588,7 @@ Decided on 2026-11-03:
 | 7 | Backups | Daily kept 7 days, weekly kept 4 weeks, monthly kept 12 months |
 | 8 | French texts | Drafted by Claude, reviewed by a native French speaker |
 | 9 | Coverage minimums | 95% domain/application, 85% backend overall, 75% front end |
+| 10 | Wiki location (decided 2026-11-06) | GitHub Wiki, not a `docs/Wiki/` folder. Claude may commit and push to the wiki repository only when the project owner asks |
 
 Still open **[CONFIRM]**:
 
