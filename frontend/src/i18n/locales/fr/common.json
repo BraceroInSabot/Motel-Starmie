@@ -1,0 +1,16 @@
+{
+  "app": {
+    "name": "Starmie Motel PMS",
+    "skeletonReady": "Le squelette de l'application fonctionne."
+  },
+  "language": {
+    "label": "Langue",
+    "en": "English",
+    "fr": "Français"
+  },
+  "errors": {
+    "UNKNOWN_ERROR": "Une erreur s'est produite. Veuillez réessayer.",
+    "NETWORK_ERROR": "Le serveur est injoignable. Vérifiez votre connexion et réessayez."
+  },
+  "enums": {}
+}

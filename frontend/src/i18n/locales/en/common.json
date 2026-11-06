@@ -1,0 +1,16 @@
+{
+  "app": {
+    "name": "Starmie Motel PMS",
+    "skeletonReady": "The application skeleton is running."
+  },
+  "language": {
+    "label": "Language",
+    "en": "English",
+    "fr": "Français"
+  },
+  "errors": {
+    "UNKNOWN_ERROR": "Something went wrong. Please try again.",
+    "NETWORK_ERROR": "The server could not be reached. Check your connection and try again."
+  },
+  "enums": {}
+}
